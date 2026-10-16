@@ -27,7 +27,18 @@ BAD = "[red]✗[/red]"
 
 
 def info(message: str) -> None:
+    """诊断信息。走 stderr。"""
     err_console.print(f"[dim]{message}[/dim]")
+
+
+def hint(message: str) -> None:
+    """对用户说的提示，走 stdout。
+
+    跟 `info` 只差一个流，但这个差别是有意的：`info` 是诊断，`maa run > 文件` 时
+    不该混进结果里；而"这条会话的 id 是 xxx，下次 --resume 用它"是这次交互的
+    **产出** —— 用户很可能正是靠重定向把它抄下来的。
+    """
+    console.print(f"[dim]{message}[/dim]")
 
 
 def ok(message: str) -> None:

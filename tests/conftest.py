@@ -6,9 +6,79 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from fake_openai import Handler, serve
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def run_cli(
+    args: list[str],
+    home: Path,
+    *,
+    cwd: Path | None = None,
+    stdin: str | None = None,
+    **env: str,
+) -> subprocess.CompletedProcess[str]:
+    """在隔离的 `MAA_HOME` 下跑 `python -m maa`。
+
+    固定 UTF-8 输出，免得断言受 Windows 控制台代码页影响。`stdin` 给 REPL 用 ——
+    管道进去就不是终端了，那边会自动退成 `input()`（见 cli._line_reader）。
+    """
+    return subprocess.run(
+        [sys.executable, "-m", "maa", *args],
+        cwd=cwd or REPO_ROOT,
+        env={
+            **os.environ,
+            "MAA_HOME": str(home),
+            "PYTHONIOENCODING": "utf-8",
+            **env,
+        },
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
+        check=False,
+    )
+
+
+@pytest.fixture
+def fake_openai() -> Iterator[str]:
+    """一个假的 OpenAI 兼容服务，返回它的 base_url。"""
+    Handler.requests_seen = []
+    server, base_url = serve()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield base_url
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def home_with_config(maa_home: Path) -> Path:
+    """照 README 的样子写一份配置 —— 顺带验证模板那套键名是能用的。"""
+    maa_home.mkdir(parents=True, exist_ok=True)
+    (maa_home / "config.toml").write_text(
+        "[models]\n"
+        'default = "openai:gpt-5.5"\n'
+        "\n"
+        "[models.providers.openai]\n"
+        'base_url_env = "OPENAI_BASE_URL"\n'
+        'api_key_env = "OPENAI_API_KEY"\n'
+        "use_responses_api = false\n",
+        encoding="utf-8",
+    )
+    return maa_home
 
 
 @pytest.fixture

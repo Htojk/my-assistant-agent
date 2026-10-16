@@ -20,7 +20,7 @@ import typer
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
 
-from . import __version__, backends, mcp, paths, profiles, skills, ui
+from . import __version__, backends, mcp, paths, profiles, session, skills, ui
 from .config import (
     Config,
     ConfigError,
@@ -44,6 +44,9 @@ app.add_typer(skills_app, name="skills")
 
 mcp_app = typer.Typer(no_args_is_help=True, help="MCP 服务管理。")
 app.add_typer(mcp_app, name="mcp")
+
+sessions_app = typer.Typer(no_args_is_help=True, help="历史会话。")
+app.add_typer(sessions_app, name="sessions")
 
 OPT_CONFIG = typer.Option(None, "--config", "-c", help="配置文件路径")
 OPT_AGENT = typer.Option(None, "--agent", "-a", help="能力 profile")
@@ -115,21 +118,18 @@ class Session:
     mcp: mcp.Loaded = field(default_factory=mcp.Loaded)
 
 
-def _assemble(options: GlobalOptions, *, for_chat: bool = False) -> Session:
-    """按选项装配 agent。每会话一次 —— MCP 工具是构图期参数，改不了。"""
+def _assemble(options: GlobalOptions, *, store: session.Store | None = None) -> Session:
+    """按选项装配 agent。每会话一次 —— MCP 工具是构图期参数，改不了。
+
+    给了 `store` 就把它的 checkpointer 挂上去：多轮之间靠它记上下文，跨进程恢复
+    也靠它。`run` 不给 —— 一次性任务没有"下次接着聊"这回事，不该往会话库里写。
+    """
     cfg = _load_config(options)
     workspace = (
         paths.resolve_workspace(options.workspace)
         if options.workspace
         else paths.resolve_workspace(cfg.backend.workspace)
     )
-
-    checkpointer = None
-    if for_chat:
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        # C7 换成 SqliteSaver 就能跨进程恢复；现在先让一次会话内的多轮能记住上下文。
-        checkpointer = InMemorySaver()
 
     loaded = _load_mcp(cfg)
     with ui.status("装配 agent…"):
@@ -139,7 +139,7 @@ def _assemble(options: GlobalOptions, *, for_chat: bool = False) -> Session:
             workspace=workspace,
             model=options.model,
             extra_tools=tuple(loaded.tools),
-            checkpointer=checkpointer,
+            checkpointer=store.saver if store is not None else None,
         )
     for problem in loaded.problems:
         ui.warn(f"MCP {problem}")
@@ -160,8 +160,8 @@ def _load_mcp(cfg: Config) -> mcp.Loaded:
         return asyncio.run(mcp.connect(discovery.servers, timeout=cfg.mcp.tool_timeout))
 
 
-def _show_banner(session: Session) -> None:
-    built = session.built
+def _show_banner(assembled: Session) -> None:
+    built = assembled.built
     count = len(skills.scan(built.skill_sources).skills)
     # 子代理跟 profile 写在一起：它们是一回事（profile 决定派谁），
     # 分开写只会让 banner 多出一行来。
@@ -174,7 +174,7 @@ def _show_banner(session: Session) -> None:
         backend=backends.describe(built.backend_cfg, built.workspace),
         workspace=paths.display(built.workspace),
         skills=f"{count} 个（maa skills list 看详情）" if count else "无",
-        mcp=_mcp_summary(session.mcp),
+        mcp=_mcp_summary(assembled.mcp),
     )
 
 
@@ -245,11 +245,11 @@ def run(
 ) -> None:
     """一次性执行：跑完就退出。"""
     options = _resolve(ctx, agent=agent, model=model, workspace=workspace)
-    session = _assemble(options)
-    _show_banner(session)
+    assembled = _assemble(options)
+    _show_banner(assembled)
 
     try:
-        final_text = _run_turn(session.built, prompt, thread_id="run")
+        final_text = _run_turn(assembled.built, prompt, thread_id="run")
     except KeyboardInterrupt:
         ui.newline()
         ui.warn("已中断")
@@ -266,43 +266,132 @@ def chat(
     agent: str | None = OPT_AGENT,
     model: str | None = OPT_MODEL,
     workspace: str | None = OPT_WORKSPACE,
+    resume: str | None = typer.Option(
+        None, "--resume", "-r", help="接着某个会话聊：给它的 id 或 id 前缀"
+    ),
 ) -> None:
-    """交互式 REPL。Ctrl-D 或 /exit 退出。"""
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.history import InMemoryHistory
-
+    """交互式 REPL。每轮都存进会话库，Ctrl-D 退出后可以 --resume 接着聊。"""
     options = _resolve(ctx, agent=agent, model=model, workspace=workspace)
-    session = _assemble(options, for_chat=True)
-    _show_banner(session)
-    ui.info("输入 /help 看可用命令；Ctrl-D 退出。")
+    store = session.Store()
+    try:
+        # 先认 id 再装配：id 写错了不该让用户先等一次模型和 MCP 的初始化。
+        thread_id = store.match(resume) if resume else store.new_id()
+        assembled = _assemble(options, store=store)
+        _show_banner(assembled)
+        if resume:
+            _announce_resume(store, thread_id, assembled)
+        else:
+            ui.hint(f"会话 {thread_id} —— 退出后 `maa chat --resume {thread_id}` 接着聊")
+        ui.hint("输入 /help 看可用命令；Ctrl-D 退出。")
+        _repl(assembled, store, thread_id)
+    except ConfigError as exc:
+        ui.error(str(exc))
+        raise typer.Exit(code=1) from None
+    finally:
+        store.close()
 
-    session: PromptSession[str] = PromptSession(history=InMemoryHistory())
-    thread_id = f"chat-{os.getpid()}"
+
+def _repl(assembled: Session, store: session.Store, thread_id: str) -> None:
+    """读一行、跑一轮、记一笔。会话切换（/new、/resume）就是换个 thread_id。"""
+    read = _line_reader()
 
     while True:
         try:
-            line = session.prompt("\n> ")
+            line = read("\n> ")
         except (EOFError, KeyboardInterrupt):
             ui.newline()
+            _say_goodbye(store, thread_id)
             return
 
         text = line.strip()
         if not text:
             continue
         if text in {"/exit", "/quit"}:
+            _say_goodbye(store, thread_id)
             return
         if text == "/help":
             _print_chat_help()
             continue
+        if text == "/new":
+            thread_id = store.new_id()
+            ui.hint(f"新会话 {thread_id}（之前那条还在，maa sessions list 找得回来）")
+            continue
+        if text == "/threads":
+            _render_sessions(store.entries(), current=thread_id)
+            continue
+        if text == "/resume" or text.startswith("/resume "):
+            target = text[len("/resume") :].strip()
+            if not target:
+                ui.warn("用法：/resume <id>（/threads 看有哪些）")
+                continue
+            try:
+                thread_id = store.match(target)
+            except ConfigError as exc:
+                ui.error(str(exc))
+                continue
+            _announce_resume(store, thread_id, assembled)
+            continue
+        if text.startswith("/"):
+            # 不认的命令当成提示词发出去才是最坑的：用户以为在敲命令，模型
+            # 收到的却是一句莫名其妙的话。
+            ui.warn(f"没有这个命令：{text.split()[0]}（/help 看有哪些）")
+            continue
 
         try:
-            _run_turn(session.built, text, thread_id=thread_id)
+            _run_turn(assembled.built, text, thread_id=thread_id)
         except KeyboardInterrupt:
             ui.newline()
             ui.warn("已中断，可以接着问")
         except ConfigError as exc:
             ui.error(str(exc))
+        else:
+            # 只有真跑完的这一轮才记账 —— 中途 Ctrl-C 掉的不算聊过。
+            store.record(
+                thread_id,
+                title=text,
+                profile=assembled.built.profile.name,
+                workspace=paths.display(assembled.built.workspace),
+            )
         ui.newline()
+
+
+def _line_reader() -> Callable[[str], str]:
+    """拿一个"读一行"的函数。
+
+    prompt_toolkit 只在真终端里立得住：stdin / stdout 一旦被重定向，它在 Windows
+    上直接抛 `NoConsoleScreenBufferError`。退成内置 `input()`，`maa chat < 脚本`
+    才跑得起来 —— 顺带也让这段能被测试驱动。
+    """
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.history import FileHistory
+
+            paths.ensure_maa_home()
+            device = PromptSession[str](history=FileHistory(str(paths.maa_home() / "history")))
+            return device.prompt
+        except Exception as exc:  # noqa: BLE001 —— 终端千奇百怪，退化成 input 总比崩掉好
+            ui.warn(f"终端读行不可用（{type(exc).__name__}），改用最朴素的输入")
+    return input
+
+
+def _announce_resume(store: session.Store, thread_id: str, assembled: Session) -> None:
+    """接着聊之前，把"这是哪条会话、跟现在这套装配对不对得上"讲清楚。"""
+    entry = store.info(thread_id)
+    where = f"（{entry.turns} 轮，{entry.ago()}）" if entry.turns else ""
+    ui.hint(f"接着 {thread_id} 聊{where}")
+    if entry.profile and entry.profile != assembled.built.profile.name:
+        ui.warn(
+            f"这条会话上次是 {entry.profile} profile 聊的，现在是"
+            f" {assembled.built.profile.name} —— 历史都在，但工具和提示词换了"
+        )
+
+
+def _say_goodbye(store: session.Store, thread_id: str) -> None:
+    entry = store.get(thread_id)
+    if entry is None or not entry.turns:
+        return  # 一句话都没聊过就退出的，没什么好存的，也不值得给个 id 让人记
+    ui.hint(f"会话已存：{thread_id}（{entry.turns} 轮）—— 接着聊用 --resume {thread_id}")
 
 
 def _print_chat_help() -> None:
@@ -311,7 +400,44 @@ def _print_chat_help() -> None:
         ["命令", "说明"],
         [
             ("/help", "看这张表"),
+            ("/threads", "列出历史会话"),
+            ("/resume <id>", "切到某条历史会话（给 id 前缀就行）"),
+            ("/new", "开一条新会话，旧的留着"),
             ("/exit, /quit", "退出（Ctrl-D 同）"),
+        ],
+    )
+
+
+@sessions_app.command("list")
+def sessions_list(
+    ctx: typer.Context,
+    limit: int = typer.Option(20, "--limit", "-n", help="最多列几条"),
+) -> None:
+    """列出存下来的会话。不连网、不建模型 —— 看一眼随时能跑。"""
+    store = session.Store()
+    try:
+        _render_sessions(store.entries(limit=limit))
+    finally:
+        store.close()
+    ui.hint(f"库：{paths.display(paths.sessions_db_path())}（删掉它就清空历史）")
+
+
+def _render_sessions(entries: list[session.Entry], current: str = "") -> None:
+    if not entries:
+        ui.warn("还没有聊过的会话 —— `maa chat` 开一个")
+        return
+    ui.table(
+        "会话（新的在前）",
+        ["", "id", "标题", "轮数", "最后聊"],
+        [
+            (
+                "▸" if entry.thread_id == current else "",
+                entry.thread_id,
+                entry.title or "（无标题）",
+                entry.turns,
+                entry.ago(),
+            )
+            for entry in entries
         ],
     )
 
@@ -530,6 +656,7 @@ def _check_environment(options: GlobalOptions, cfg: Config, record: Recorder) ->
 
     workspace = paths.resolve_workspace(options.workspace or cfg.backend.workspace)
     record("工作目录", *_check_workspace(workspace))
+    _check_sessions(record)
 
     try:
         backends.build_backend(cfg.backend, workspace)
@@ -559,8 +686,33 @@ def _check_environment(options: GlobalOptions, cfg: Config, record: Recorder) ->
     record("agent 装配", True, detail)
 
 
+def _check_sessions(record: Recorder) -> None:
+    """会话库读不读得动。它在主目录里，权限出问题的机器上这里是第一个炸的。
+
+    只读不写：自检不该顺带在你主目录里建文件。
+    """
+    path = paths.sessions_db_path()
+    try:
+        store = session.Store(path)
+        try:
+            count = len(store.entries(limit=1000))
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 —— 自检不该被任何异常打断
+        record("会话库", False, f"{paths.display(path)} 读不了：{exc}")
+        return
+    record("会话库", True, f"{paths.display(path)} · 历史 {count} 条")
+
+
 def _report(checks: list[tuple[str, str, str]]) -> bool:
     """打表，返回"是不是全绿"。"""
+    marks = {"ok": ui.OK, "warn": ui.WARN, "bad": ui.BAD}
+    ui.table(
+        "maa doctor",
+        ["检查", "", "结果"],
+        [(label, marks[state], detail) for label, state, detail in checks],
+    )
+    return all(state != "bad" for _label, state, _detail in checks)
     marks = {"ok": ui.OK, "warn": ui.WARN, "bad": ui.BAD}
     ui.table(
         "maa doctor",
