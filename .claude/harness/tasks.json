@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T08:31:20Z",
+  "updated_at": "2026-10-16T08:43:05Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -79,7 +79,7 @@
     {
       "id": "C5",
       "title": "MCP 可配置与动态加载",
-      "status": "in_progress",
+      "status": "done",
       "commit": "feat(mcp): MCP 配置读取、校验与动态加载",
       "deliverables": [
         "src/maa/mcp.py",
@@ -87,12 +87,13 @@
         "tests/test_mcp.py"
       ],
       "acceptance": "合法 .mcp.json 能列出工具；非法配置（字符串指向非 URL、stdio 缺 command/args）给出可读报错",
-      "notes": "用 langchain.mcp.MCPAdapter（beta，需抑制 LangChainBetaWarning）；transport 一律省略由 SDK 推断。"
+      "notes": "MCP 配置发现/校验/并行连接，工具带服务前缀注入 agent",
+      "sha": "66c61ee"
     },
     {
       "id": "C6",
       "title": "三种能力 profile 与子代理",
-      "status": "pending",
+      "status": "in_progress",
       "commit": "feat(agent): writer / coder / planner 三种 profile 与子代理",
       "deliverables": [
         "src/maa/subagents.py",
