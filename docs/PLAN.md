@@ -249,15 +249,24 @@ deepagents 的内部数据（`/large_tool_results/`、`/conversation_history/`�
 ```
 读取 .mcp.json (+ ~/.maa/mcp.json，项目级覆盖用户级)
    ↓ 校验：字符串必须是 http(s) URL；stdio 必须是 command/args 字典
-async with MCPAdapter(config) as adapter: tools = await adapter.list_tools(cache_mode="use")
-   ↓ 工具带 metadata["mcp"]["server"|"tool"|"annotations"]
-create_deep_agent(tools=[*builtin, *mcp_tools])     # 每会话重建一次
+mcp.connect()：显式建传输（Stdio / StreamableHttp / SSE）→ MCPAdapter → list_tools()
+   ↓ 工具带 metadata["mcp"]["tool"]["annotations"|"_meta"] 与 metadata["mcp"]["server"]
+工具名手工加 "{server}_" 前缀；create_deep_agent(tools=[*builtin, *mcp_tools])  # 每会话重建一次
 ```
 
-- 工具名由 FastMCP 自动加 `{server}_` 前缀，无需手工处理。
-- 按 `metadata["mcp"]["annotations"]` 的 `read_only_hint`/`destructive_hint` 决定是否进审批门，
-  **而非硬编码工具名**（文档明确推荐）。
-- 命名空间是 **beta**，导入会每进程抛一次 `LangChainBetaWarning` → 按配置压制。
+- 工具名前缀**得自己加**：`MCPAdapter` 原样透传，注册成 `echo` 的工具出来还叫 `echo`。
+  前缀在 `mcp._one()` 里加，顺带把服务名里的非法字符换成 `_`、查出 prefork 后的重名。
+- annotations 不在 `metadata["mcp"]["annotations"]`（那个位置是 `None`），
+  在 `metadata["mcp"]["tool"]["annotations"]`，键是 snake_case
+  （`read_only_hint` / `destructive_hint`）。
+- **annotations 不进审批门**：它是服务自报的，信它等于把钥匙交给被审的第三方。
+  审批名单来自用户配置的 `approval.gated_tools`，不硬编码、也不采信远端声明。
+- 命名空间是 **beta**，导入会每进程抛一次 `LangChainBetaWarning` →
+  用官方口子 `suppress_langchain_beta_warning` 在 `mcp.adapter_for()` 里压制
+  （普通 `warnings.catch_warnings()` 压不住）。
+
+> **本节已按实测更正**（原文三条里有两条与实现不符）。测量过程与原始
+> metadata 见 [INDEX-COVERAGE.md §5](INDEX-COVERAGE.md)。
 
 ### 5.5 会话恢复
 

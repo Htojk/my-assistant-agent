@@ -75,7 +75,11 @@ pytest                # 全量测试
 maa doctor            # 环境自检
 ```
 
-开发计划见 [`docs/PLAN.md`](docs/PLAN.md)，技术对照见 [`docs/INDEX-COVERAGE.md`](docs/INDEX-COVERAGE.md)。
+文档：
+[`docs/PLAN.md`](docs/PLAN.md) 开发计划（做什么、不做什么）、
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 架构与关键决定的代价、
+[`docs/INDEX-COVERAGE.md`](docs/INDEX-COVERAGE.md) 逐篇技术对照（引了什么、为什么）、
+[`CHANGELOG.md`](CHANGELOG.md) 变更记录。
 
 ## License
 
