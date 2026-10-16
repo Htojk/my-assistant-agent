@@ -71,6 +71,19 @@ Recorder = Callable[[str, bool | None, str], None]
 """自检记一条：`(标签, 是否通过 —— None 表示提醒, 详情)`。"""
 
 
+def _show_version(asked: bool) -> None:
+    """`--version` 一到就收工。
+
+    必须走 **eager** 回调（见下面的 `is_eager`）：挂在 group 上的普通选项要等
+    "命令选好了"才轮到处理，而 `maa --version` 后面没有命令 —— Click 会先抛
+    "Missing command" 退 2，这个分支根本执行不到（`maa --version doctor` 反而能跑，
+    那只是碰巧）。`--help` 没这毛病，因为它是 Click 内置的 eager 选项。
+    """
+    if asked:
+        ui.console.print(f"my-assistant-agent {__version__}")
+        raise typer.Exit()
+
+
 @app.callback()
 def _root(
     ctx: typer.Context,
@@ -78,13 +91,11 @@ def _root(
     agent: str | None = OPT_AGENT,
     model: str | None = OPT_MODEL,
     workspace: str | None = OPT_WORKSPACE,
-    version: bool = typer.Option(False, "--version", "-V", help="版本号"),
+    version: bool = typer.Option(
+        False, "--version", "-V", help="版本号", callback=_show_version, is_eager=True
+    ),
 ) -> None:
     """跑在终端里的通用助手 agent：写作 / 编码 / 任务规划。"""
-    if version:
-        ui.console.print(f"my-assistant-agent {__version__}")
-        raise typer.Exit()
-
     load_environment()
     ctx.obj = GlobalOptions(config, agent, model, workspace)
 

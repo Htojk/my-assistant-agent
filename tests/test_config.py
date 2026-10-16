@@ -12,6 +12,8 @@ from maa.config import (
     DEFAULT_CONFIG_TEMPLATE,
     Config,
     ConfigError,
+    ModelsConfig,
+    ProviderConfig,
     load_config,
     render_config,
     write_config_template,
@@ -123,3 +125,71 @@ def test_show_出来的_toml_能读回去(maa_home: Path) -> None:
 def test_模板内容不为空() -> None:
     assert "[models]" in DEFAULT_CONFIG_TEMPLATE
     assert "MAA_HOME" not in DEFAULT_CONFIG_TEMPLATE
+
+
+# ------------------------------------------------------------------ provider 接入参数
+
+
+def test_读不了的配置文件也报错(maa_home: Path) -> None:
+    """路径指到一个目录上时给的是"配置读不了"，不是一句 `IsADirectoryError` 栈 ——
+    用户看一眼就知道是自己路径写错了，还是文件本身坏了。"""
+    paths.config_path().mkdir(parents=True)
+
+    with pytest.raises(ConfigError, match="读不了"):
+        load_config()
+
+
+def test_密钥环境变量是空白当没设(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`export OPENAI_API_KEY=` 之后不该被当成"给了一个空密钥" —— 那只会带着空
+    Bearer 去撞 401，报错还看不懂。"""
+    monkeypatch.setenv("MAA_临时_KEY", "   ")
+
+    assert ProviderConfig(api_key_env="MAA_临时_KEY").resolve_api_key() is None
+
+
+def test_环境变量里没这个名字就是没设(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MAA_没人设过_KEY", raising=False)
+
+    assert ProviderConfig(api_key_env="MAA_没人设过_KEY").resolve_api_key() is None
+
+
+def test_写死的值盖过环境变量(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个都写了以配置文件为准：写死在文件里的那行是**这次**的选择，环境变量是
+    这台机器上的兜底。反过来会让人明明改了配置却不生效。"""
+    monkeypatch.setenv("MAA_临时_KEY", "环境里那个")
+    provider = ProviderConfig(api_key="写死那个", api_key_env="MAA_临时_KEY")
+
+    assert provider.resolve_api_key() == "写死那个"
+
+
+def test_地址也走同一套规则(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MAA_临时_URL", "http://环境里/v1")
+
+    assert ProviderConfig(base_url_env="MAA_临时_URL").resolve_base_url() == "http://环境里/v1"
+    assert ProviderConfig(base_url="http://写死/v1").resolve_base_url() == "http://写死/v1"
+    assert ProviderConfig().resolve_base_url() is None
+
+
+def test_没写_provider_段落就回退到_local() -> None:
+    """`local` 是给自建 OpenAI 兼容端点留的通配档位：只写了地址、没挨个登记 provider
+    名的人不该被卡住。"""
+    models = ModelsConfig(providers={"local": ProviderConfig(base_url="http://自建/v1")})
+
+    assert models.provider_for("openai:gpt-5.5").base_url == "http://自建/v1"
+
+
+def test_登记过的_provider_优先于_local() -> None:
+    """通配只是在**没写**的时候兜底，不能把写了的顶掉。"""
+    models = ModelsConfig(
+        providers={
+            "local": ProviderConfig(base_url="http://自建/v1"),
+            "openai": ProviderConfig(base_url="http://官方/v1"),
+        }
+    )
+
+    assert models.provider_for("openai:gpt-5.5").base_url == "http://官方/v1"
+
+
+def test_谁都对不上就是_None() -> None:
+    """一个 provider 都没配时得能被 `maa doctor` 判成"缺配置"，而不是给个空壳对象。"""
+    assert ModelsConfig().provider_for("openai:gpt-5.5") is None

@@ -16,7 +16,29 @@ from pathlib import Path
 import pytest
 from fake_openai import Handler, serve
 
+from maa import paths
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """把"用户主目录"指到临时目录，让测试不再看开发机的脸色。
+
+    `paths.home_dir()` 就是为这个留的替换点（见它自己的 docstring），但技能搜索路径
+    里那两个 `~/.claude/skills`、`~/.agents/skills` 是**有意**算进去的生产行为 ——
+    测试不该因此随机器而变：本机那两个目录里躺着几十个技能，别人机器上可能是零个。
+
+    环境变量也一起改：子进程（`run_cli`）里是另一份 `paths` 模块，改不到它的全局，
+    而 `Path.home()` 认的是 `USERPROFILE`（Windows）/ `HOME`（其他平台）。
+    """
+    fake = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(paths, "home_dir", lambda: fake)
+    monkeypatch.setenv("HOME", str(fake))
+    monkeypatch.setenv("USERPROFILE", str(fake))
+    return fake
 
 
 def run_cli(

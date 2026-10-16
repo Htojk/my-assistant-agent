@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from maa import profiles, skills, subagents
-from maa.config import Config, ConfigError
+from maa.config import Config, ConfigError, ModelsConfig, ProviderConfig
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -372,3 +372,68 @@ def test_没点技能就不加那一段(workspace: Path) -> None:
     built = profiles.build_agent(Config(), "general", workspace=workspace, model=_stub_model())
 
     assert profiles._skill_hint(built.profile, skills.scan(built.skill_sources)) == ""
+
+
+# ------------------------------------------------------------------ 模型怎么建、名字怎么来
+
+
+def _keyed_cfg(**provider: object) -> Config:
+    """一份"密钥写在环境变量名里"的配置 —— 也就是 README 让用户写的那种。"""
+    return Config(
+        models=ModelsConfig(
+            default="openai:gpt-5.5",
+            providers={"openai": ProviderConfig(**provider)},  # type: ignore[arg-type]
+        )
+    )
+
+
+def test_provider_的接入参数真的传下去了(monkeypatch: pytest.MonkeyPatch) -> None:
+    """config 里写了 base_url / api_key 却没传到模型实例上，等于没配 —— 而且报错会
+    晚到第一次请求，那时人早就不看启动了。
+
+    读 SDK 内部字段（`openai_api_base` 之类）是刻意的：这里要盯的正是"传下去了没有"。
+    """
+    monkeypatch.setenv("MAA_测_URL", "https://自建/v1")
+    monkeypatch.setenv("MAA_测_KEY", "sk-测")
+
+    model = profiles.build_model(
+        _keyed_cfg(base_url_env="MAA_测_URL", api_key_env="MAA_测_KEY", use_responses_api=False)
+    )
+
+    assert str(model.openai_api_base) == "https://自建/v1"  # type: ignore[attr-defined]
+    assert model.openai_api_key.get_secret_value() == "sk-测"  # type: ignore[attr-defined]
+    assert model.use_responses_api is False  # type: ignore[attr-defined]
+
+
+def test_没写_use_responses_api_就别替用户做主(monkeypatch: pytest.MonkeyPatch) -> None:
+    """自建端点多半没有 /responses，官方 OpenAI 又想走 —— 用户没表态时不能替他关。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+
+    model = profiles.build_model(_keyed_cfg(api_key_env="OPENAI_API_KEY"))
+
+    # 不给就是我们不管，交给 SDK 自己的默认值
+    assert model.use_responses_api is None  # type: ignore[attr-defined]
+
+
+def test_resolve_model_没给模型就用配置里的(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--model` 没写时走 `[models].default` —— 顺便把 spec 带回去给 banner 显示，
+    不然人看见的模型名和实际用的可能不是一回事。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+
+    model, spec = profiles.resolve_model(_keyed_cfg(api_key_env="OPENAI_API_KEY"))
+
+    assert spec == "openai:gpt-5.5"
+    assert not isinstance(model, ScriptedChatModel)
+
+
+def test_names_列出所有_profile() -> None:
+    assert "general" in profiles.names()
+    assert profiles.names() == sorted(profiles.names())
+
+
+def test_tool_names_挖不出来也不炸() -> None:
+    """它是从建好的图里翻 langgraph 内部结构找工具名的（doctor 要用），换版本就可能
+    翻空 —— 自检自己崩掉比显示不全难看得多，所以约定失败给空表。"""
+    fake = type("FakeBuilt", (), {"graph": None})()
+
+    assert profiles.tool_names(fake) == []  # type: ignore[arg-type]

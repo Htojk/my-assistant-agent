@@ -267,3 +267,76 @@ def test_技能目录没被倒进工作目录(
     built.graph.invoke({"messages": [HumanMessage("随便聊聊")]})
 
     assert {path.name for path in workspace.iterdir()} == set()
+
+
+# --------------------------------------------------------------------------- 扫描兜底
+
+
+def test_frontmatter_坏_yaml_当没有() -> None:
+    """只负责显示，不该因为写完没检查就让 `skills list` 崩掉 —— 中间件自己会拒。"""
+    assert skills.parse_frontmatter("---\nname: [没闭合\n---\n正文") == {}
+
+
+def test_frontmatter_不是映射就不要() -> None:
+    """YAML 合法但是个列表（比如整段忘了写键名）—— 拿它去 `.get("name")` 会炸。"""
+    assert skills.parse_frontmatter("---\n- a\n- b\n---\n正文") == {}
+
+
+def test_名字不对目录的_技能不算数(home: Path, builtin: Path, project: Path) -> None:
+    """已经由 `test_name_跟目录名不一致要说出来` 盯着问题列表，这条盯的是**结果**：
+    写坏的那份不能顺手把内置的同名技能也顶掉。"""
+    _write_skill(home / ".maa" / "skills", "手滑写错的名字", "描述", dirname="demo")
+
+    result = skills.scan(skills.discover(Config(), project=project))
+
+    assert [skill.source.label for skill in result.skills] == ["内置"]
+
+
+def test_技能源读不了记一条不炸(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """技能目录指向一个文件（写错了），或者权限不够 —— 都是一个 OSError 的事。
+
+    这里直接调 `scan`：`discover` 会把不存在的目录滤掉，但"存在却不是目录"这
+    一种会漏过去。
+    """
+    not_a_directory = tmp_path / "其实是个文件"
+    not_a_directory.write_text("我不是目录", encoding="utf-8")
+    source = skills.SkillSource(route="/skills/x/", label="坏源", path=not_a_directory)
+
+    result = skills.scan([source])
+
+    assert result.skills == []
+    assert any("读不了" in problem for problem in result.problems)
+
+
+def test_SKILL_md_太大就跳过(
+    home: Path, builtin: Path, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上限防的是"有人把整本书塞进 SKILL.md" —— 那会整段进系统提示。
+    线压到 10 字节来试，不然这条测试自己得先写 256K。"""
+    monkeypatch.setattr(skills, "MAX_SKILL_FILE_SIZE", 10)
+    _write_skill(home / ".maa" / "skills", "胖技能", "描述")
+
+    result = skills.scan(skills.discover(Config(), project=project))
+
+    assert "胖技能" not in [skill.name for skill in result.skills]
+    assert any("太大" in problem for problem in result.problems)
+
+
+def test_SKILL_md_读不了记一条(
+    home: Path, builtin: Path, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """编码坏了 / 权限不够。跳过它，别的位置的技能照旧。"""
+    _write_skill(home / ".maa" / "skills", "读不到", "描述")
+    real_read = Path.read_text
+
+    def refuse(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self.name == skills.SKILL_FILENAME and self.parent.name == "读不到":
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "非法字节")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+
+    result = skills.scan(skills.discover(Config(), project=project))
+
+    assert [skill.name for skill in result.skills] == ["demo"]  # 内置那个还在
+    assert any("读不了" in problem for problem in result.problems)

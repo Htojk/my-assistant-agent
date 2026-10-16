@@ -12,7 +12,7 @@ from deepagents.backends import (
     StateBackend,
 )
 
-from maa import backends
+from maa import backends, paths
 from maa.config import BackendConfig, ConfigError
 
 
@@ -80,3 +80,21 @@ def test_remote_没接通要明说(workspace: Path) -> None:
 
 def test_描述里带出无隔离这件事(workspace: Path) -> None:
     assert "无隔离" in backends.describe(BackendConfig(mode="local"), workspace)
+
+
+def test_描述说清楚每种模式(workspace: Path) -> None:
+    """banner 里那一行是用户判断"我现在安不安全"的主要依据，三种模式不能串词 ——
+    readonly 说成"可执行"就等于骗人。"""
+    local = backends.describe(BackendConfig(mode="local"), workspace)
+    readonly = backends.describe(BackendConfig(mode="readonly"), workspace)
+    remote = backends.describe(BackendConfig(mode="remote"), workspace)
+
+    assert local.startswith("local") and "只读" not in local
+    assert readonly.startswith("readonly") and "只读" in readonly
+    # remote 还没接通，得说出来，别让人以为隔离已经生效了
+    assert remote.startswith("remote") and "未接通" in remote
+
+
+def test_描述里带着工作目录(workspace: Path) -> None:
+    """同一个模式在不同目录下安全性完全不同，路径不能省。"""
+    assert paths.display(workspace) in backends.describe(BackendConfig(mode="local"), workspace)

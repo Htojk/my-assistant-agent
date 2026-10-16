@@ -43,7 +43,7 @@ def config_path() -> Path:
 
 
 def sessions_db_path() -> Path:
-    """会话持久化用的 sqlite 库（C7 用）。"""
+    """会话持久化用的 sqlite 库（`--resume` 靠它）。"""
     return maa_home() / "sessions.db"
 
 

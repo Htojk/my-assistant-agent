@@ -320,3 +320,105 @@ async def test_工具能进到_agent_手里(memory: dict[str, FastMCP], workspac
 
     assert built.extra_tools == tuple(loaded.tools)
     assert "demo_echo" in profiles.tool_names(built)
+
+
+# --------------------------------------------------------------------------- 读配置：兜底那几条
+
+
+def test_顶层不是对象要说清(project: Path) -> None:
+    """JSON 合法但形状不对 —— 是最容易犯的那种错（照着别的工具抄成数组）。"""
+    (project / ".mcp.json").write_text("[1, 2, 3]", encoding="utf-8")
+
+    discovery = mcp.discover(Config(), project=project)
+
+    assert discovery.servers == []
+    assert any("顶层应该是一个对象" in problem for problem in discovery.problems)
+
+
+def test_mcpServers_本身得是对象(project: Path) -> None:
+    """层名对了但里面写成列表的话，逐条走下去会撞在 `spec.items()` 上 —— 提前拦住，
+    给一句能照着改的话，比抛个 AttributeError 强。"""
+    (project / ".mcp.json").write_text('{"mcpServers": ["a", "b"]}', encoding="utf-8")
+
+    discovery = mcp.discover(Config(), project=project)
+
+    assert discovery.servers == []
+    assert any("应该是一个对象" in problem for problem in discovery.problems)
+
+
+def test_多写的顶层键要说一声但不影响服务(project: Path) -> None:
+    """人在顶层写个 `"version"` 之类是常事。服务照读，但得告诉他那键不生效 ——
+    不然他会以为它在起作用。"""
+    (project / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"a": {"url": "https://a/mcp"}}, "version": "2"}),
+        encoding="utf-8",
+    )
+
+    discovery = mcp.discover(Config(), project=project)
+
+    assert [server.name for server in discovery.servers] == ["a"]
+    assert any("version" in problem and "不会生效" in problem for problem in discovery.problems)
+
+
+def test_配置文件太大就跳过(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """上限是防手滑（比如把别的东西复制进来）。这里把线压到 10 字节来试，不然这条
+    测试自己得先写出一兆的文件。"""
+    monkeypatch.setattr(mcp, "MAX_CONFIG_SIZE", 10)
+    (project / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"a": {"url": "https://a/mcp"}}}), encoding="utf-8"
+    )
+
+    discovery = mcp.discover(Config(), project=project)
+
+    assert discovery.servers == []
+    assert any("文件过大" in problem for problem in discovery.problems)
+
+
+def test_读不了的文件记一条不炸(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """权限、编码、坏盘 —— 都得变成一行问题，而不是把整个启动带崩。
+
+    这里得自己让 `read_text` 抛：往配置路径上放个目录是**走不到**这个分支的
+    （`_read_file` 开头那句 `is_file()` 就把目录挡回去了），所以只能直接模拟读失败。
+    """
+    target = _write_config(project, {"a": {"url": "https://a/mcp"}})
+    real_read = Path.read_text
+
+    def refuse(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == target:
+            raise PermissionError(13, "拒绝访问")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+
+    discovery = mcp.discover(Config(), project=project)
+
+    assert discovery.servers == []
+    assert discovery.files == [], "没读成的文件不该记进 files"
+    assert any("读不了" in problem for problem in discovery.problems)
+
+
+def test_stdio_的描述带上参数() -> None:
+    """stdio 服务光给命令名看不出它在跑什么 —— `npx` 后面那串才是重点。"""
+    server = mcp.McpServer(
+        name="fs",
+        spec={"command": "npx", "args": ["-y", "@modelcontextprotocol/server-fs", "/tmp"]},
+        source=Path("mcp.json"),
+    )
+
+    described = server.describe()
+
+    assert described.startswith("stdio: npx -y ")
+    assert "/tmp" in described
+
+
+def test_描述里不带凭据() -> None:
+    """`mcp list` 的输出经常被整段粘进聊天窗口问问题 —— 地址、命令可以露，
+    header 里的 token 不行。"""
+    server = mcp.McpServer(
+        name="internal",
+        spec={"url": "https://internal/mcp", "headers": {"Authorization": "Bearer s3cret"}},
+        source=Path("mcp.json"),
+    )
+
+    assert "s3cret" not in server.describe()
+    assert "https://internal/mcp" in server.describe()

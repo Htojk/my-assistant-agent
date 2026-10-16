@@ -81,7 +81,10 @@ class BackendConfig(BaseModel):
 
 
 class ApprovalConfig(BaseModel):
-    """审批策略。C8 才接进图，这里先把格式定下来免得改配置。"""
+    """审批策略：哪些工具执行前要先问人。
+
+    接进图的地方在 `approval.gated()` —— 这里只管格式。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
