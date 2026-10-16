@@ -39,10 +39,24 @@ def test_超时透传到后端(workspace: Path) -> None:
 
 
 def test_readonly_不给_shell(workspace: Path) -> None:
+    """两种模式都套 Composite，所以这里看的是 `default`，不是最外层。"""
     backend = backends.build_backend(BackendConfig(mode="readonly"), workspace)
 
-    assert isinstance(backend, FilesystemBackend)
-    assert not isinstance(backend, LocalShellBackend)
+    assert isinstance(backend, CompositeBackend)
+    assert isinstance(backend.default, FilesystemBackend)
+    assert not isinstance(backend.default, LocalShellBackend)
+
+
+def test_额外路由能挂上(workspace: Path) -> None:
+    """技能目录走的就是这条路 —— readonly 下也得挂得上，不然技能全废。"""
+    route = {"/skills/demo/": StateBackend()}
+
+    for mode in ("local", "readonly"):
+        backend = backends.build_backend(BackendConfig(mode=mode), workspace, routes=route)
+
+        assert backend.routes["/skills/demo/"] is route["/skills/demo/"]
+        # 内部数据的路由不能被顶掉
+        assert set(backends.INTERNAL_ROUTE_PREFIXES) <= set(backend.routes)
 
 
 def test_readonly_配上拒写规则(workspace: Path) -> None:

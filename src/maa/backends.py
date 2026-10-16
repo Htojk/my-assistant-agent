@@ -37,15 +37,31 @@ REMOTE_HINT = (
 )
 
 
-def build_backend(cfg: BackendConfig, workspace: Path) -> BackendProtocol:
-    """按配置造后端。`workspace` 必须是已解析的绝对路径。"""
+def build_backend(
+    cfg: BackendConfig,
+    workspace: Path,
+    *,
+    routes: dict[str, BackendProtocol] | None = None,
+) -> BackendProtocol:
+    """按配置造后端。`workspace` 必须是已解析的绝对路径。
+
+    `routes` 是额外要挂的虚拟前缀（C4 的技能目录走这条）。两种模式都套
+    CompositeBackend，不只是为了统一 —— 技能目录在工作目录之外，没有路由
+    就够不着，readonly 模式下也会连带失效。
+    """
+    merged = {prefix: StateBackend() for prefix in INTERNAL_ROUTE_PREFIXES}
+    merged.update(routes or {})
+
     if cfg.mode == "local":
         return CompositeBackend(
             default=LocalShellBackend(root_dir=workspace, virtual_mode=True, timeout=cfg.timeout),
-            routes={prefix: StateBackend() for prefix in INTERNAL_ROUTE_PREFIXES},
+            routes=merged,
         )
     if cfg.mode == "readonly":
-        return FilesystemBackend(root_dir=workspace, virtual_mode=True)
+        return CompositeBackend(
+            default=FilesystemBackend(root_dir=workspace, virtual_mode=True),
+            routes=merged,
+        )
     raise ConfigError(REMOTE_HINT)
 
 

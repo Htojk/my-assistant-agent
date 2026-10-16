@@ -16,7 +16,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
-from . import backends, paths
+from . import backends, paths, skills
 from .config import Config, ConfigError
 
 
@@ -36,8 +36,12 @@ class Profile:
     tools: tuple[str, ...] | None = None
     """文件工具白名单；None = 后端给的全量。"""
 
-    skills: tuple[str, ...] = ()
-    """技能目录，C4 接。"""
+    uses_skills: bool = True
+    """是否挂技能库。
+
+    技能目录是环境级的（用户主目录 + 项目目录 + 配置里的 extra_dirs），
+    不归 profile 管，见 skills.discover()。这里只决定这个 profile 要不要。
+    """
 
     subagents: tuple[dict[str, Any], ...] = ()
     """子代理规格，C6 接。"""
@@ -89,6 +93,7 @@ class BuiltAgent:
     backend_cfg: Any
     model_spec: str
     model: BaseChatModel = field(repr=False)
+    skill_sources: list[skills.SkillSource] = field(default_factory=list)
 
 
 def build_model(cfg: Config, override: str | None = None) -> BaseChatModel:
@@ -141,7 +146,8 @@ def build_agent(
     profile = get_profile(profile_name)
     resolved_workspace = workspace or paths.resolve_workspace(cfg.backend.workspace)
 
-    backend = backends.build_backend(cfg.backend, resolved_workspace)
+    sources = skills.discover(cfg) if profile.uses_skills else []
+    backend = backends.build_backend(cfg.backend, resolved_workspace, routes=skills.routes(sources))
     permissions = [*backends.build_permissions(cfg.backend), *profile.permissions]
     chat_model, model_spec = resolve_model(cfg, model)
 
@@ -151,7 +157,7 @@ def build_agent(
         system_prompt=profile.system_prompt.format(workspace=paths.display(resolved_workspace)),
         middleware=profile.middleware(),
         subagents=list(profile.subagents) or None,
-        skills=list(profile.skills) or None,
+        skills=skills.sources_param(sources) or None,
         backend=backend,
         permissions=permissions or None,
         checkpointer=checkpointer,
@@ -165,6 +171,7 @@ def build_agent(
         backend_cfg=cfg.backend,
         model_spec=model_spec,
         model=chat_model,
+        skill_sources=sources,
     )
 
 

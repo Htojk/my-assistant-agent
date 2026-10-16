@@ -30,6 +30,10 @@ dependencies = [
     "pydantic>=2.7",
     "python-dotenv>=1",
     "tomli-w>=1",
+    # --- 技能 ---
+    # SKILL.md 的 frontmatter 是 YAML；deepagents 也用它，但那是传递依赖，
+    # 我们自己直接用的东西得自己声明。
+    "pyyaml>=6",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +52,12 @@ maa = "maa.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/maa"]
+
+# 内置技能在仓库根（`skills/`），但那不在 `packages` 里，装成 wheel 时就丢了 ——
+# 于是内置技能在装好之后静默消失。打进包里，改名 `_skills`：叫 `skills` 会跟
+# `maa/skills.py` 撞名，Python 会优先当成包。
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "maa/_skills"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

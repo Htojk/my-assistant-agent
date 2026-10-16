@@ -19,7 +19,7 @@ import typer
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
 
-from . import __version__, backends, paths, profiles, ui
+from . import __version__, backends, paths, profiles, skills, ui
 from .config import (
     Config,
     ConfigError,
@@ -37,6 +37,9 @@ app = typer.Typer(
 
 config_app = typer.Typer(no_args_is_help=True, help="配置管理。")
 app.add_typer(config_app, name="config")
+
+skills_app = typer.Typer(no_args_is_help=True, help="技能管理。")
+app.add_typer(skills_app, name="skills")
 
 OPT_CONFIG = typer.Option(None, "--config", "-c", help="配置文件路径")
 OPT_AGENT = typer.Option(None, "--agent", "-a", help="能力 profile")
@@ -128,11 +131,13 @@ def _assemble(options: GlobalOptions, *, for_chat: bool = False) -> profiles.Bui
 
 
 def _show_banner(built: profiles.BuiltAgent) -> None:
+    count = len(skills.scan(built.skill_sources).skills)
     ui.banner(
         profile=built.profile.name,
         model=built.model_spec,
         backend=backends.describe(built.backend_cfg, built.workspace),
         workspace=paths.display(built.workspace),
+        skills=f"{count} 个（maa skills list 看详情）" if count else "无",
     )
 
 
@@ -294,6 +299,64 @@ def config_init(
     paths.ensure_maa_home()
     write_config_template(target, force=force)
     ui.ok(f"写好：{paths.display(target)}")
+
+
+@skills_app.command("list")
+def skills_list(ctx: typer.Context) -> None:
+    """列出技能源和最终生效的技能。
+
+    刻意不走装配：这里要回答的是"agent 会看到什么"，不该为了看一眼清单就
+    把模型建起来（那还得先有密钥）。
+    """
+    options = _resolve(ctx)
+    cfg = _load_config(options)
+    sources = skills.discover(cfg)
+    live = {source.path: source for source in sources}
+
+    candidates = paths.skill_search_paths(cfg.skills.extra_dirs)
+    if (builtin := skills.builtin_dir()) is not None:
+        candidates.insert(0, builtin)
+
+    rows: list[tuple[str, str, str]] = []
+    listed: set[Path] = set()
+    for path in candidates:
+        resolved = path.expanduser().resolve()
+        if resolved in listed:
+            continue
+        listed.add(resolved)
+        source = live.get(resolved)
+        # 没挂上的目录没有来源可言，标个占位 —— 目录列已经写清楚是哪儿了，
+        # 这里再回一次 `path.name` 只是把 `skills` 这五个字母重念一遍。
+        rows.append(
+            (
+                "✓" if source else "·",
+                source.label if source else "—",
+                paths.display(path),
+            )
+        )
+    ui.table("技能源（低 → 高优先级，同名后者赢）", ["", "来源", "目录"], rows)
+
+    result = skills.scan(sources)
+    if result.skills:
+        ui.table(
+            f"生效技能（{len(result.skills)} 个）",
+            ["技能", "来源", "说明"],
+            [
+                (skill.name, skill.source.label, _one_line(skill.description))
+                for skill in result.skills
+            ],
+        )
+    else:
+        ui.warn("一个技能都没有 —— 往 ~/.maa/skills/<名字>/SKILL.md 放一个试试")
+
+    for problem in result.problems:
+        ui.warn(problem)
+
+
+def _one_line(text: str, limit: int = 60) -> str:
+    """表格里放不下整段描述，掐到第一个句号。"""
+    head = text.split("。")[0].strip()
+    return head if len(head) <= limit else f"{head[: limit - 1]}…"
 
 
 @app.command()

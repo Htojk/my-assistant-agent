@@ -14,10 +14,20 @@ MAA_HOME_ENV = "MAA_HOME"
 DEFAULT_HOME_DIRNAME = ".maa"
 
 
+def home_dir() -> Path:
+    """用户主目录。
+
+    单独抽一层是为了给测试留个替换点：直接读 `Path.home()` 的话，测试会去扫
+    开发机真实的 `~/.claude/skills`，结果随机器而变——本机上那两个目录里正好
+    躺着几十个技能。
+    """
+    return Path.home()
+
+
 def maa_home() -> Path:
     """MAA 主目录：配置、会话库、日志都在这儿。`MAA_HOME` 可重定位。"""
     raw = os.environ.get(MAA_HOME_ENV, "").strip()
-    return Path(raw).expanduser() if raw else Path.home() / DEFAULT_HOME_DIRNAME
+    return Path(raw).expanduser() if raw else home_dir() / DEFAULT_HOME_DIRNAME
 
 
 def ensure_maa_home() -> Path:
@@ -73,10 +83,11 @@ def skill_search_paths(project: Path | None = None, extra: Iterable[str] = ()) -
     返回的目录不保证存在 —— 过滤交给 skills.py。
     """
     root = project or project_root()
+    home = home_dir()
     dirs = [
         user_skills_dir(),
-        Path.home() / ".claude" / "skills",
-        Path.home() / ".agents" / "skills",
+        home / ".claude" / "skills",
+        home / ".agents" / "skills",
         root / ".maa" / "skills",
         root / ".agents" / "skills",
     ]
@@ -100,6 +111,6 @@ def display(path: Path) -> str:
     except ValueError:
         pass
     try:
-        return f"~/{resolved.relative_to(Path.home())}"
+        return f"~/{resolved.relative_to(home_dir())}"
     except ValueError:
         return str(resolved)
