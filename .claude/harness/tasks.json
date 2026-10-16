@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T07:49:13Z",
+  "updated_at": "2026-10-16T08:20:05Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -44,7 +44,7 @@
     {
       "id": "C3",
       "title": "最小闭环：配置 / 沙箱后端 / CLI",
-      "status": "in_progress",
+      "status": "done",
       "commit": "feat(cli): 最小闭环——配置加载、沙箱后端工厂、CLI 骨架",
       "deliverables": [
         "src/maa/__init__.py",
@@ -57,12 +57,13 @@
         "src/maa/ui.py"
       ],
       "acceptance": "maa run \"在 out/ 下写一篇 800 字的关于 X 的文章\" 真的在磁盘上写出文件；maa doctor 可运行",
-      "notes": "MVP 通道起点。本步只做 general profile，不含多 profile / 审批 / 会话恢复。"
+      "notes": "最小闭环打通：配置→后端→profile→CLI 全链路；34 个用例全绿；端到端验收在本地假 OpenAI 端点上实测落盘",
+      "sha": "681791560d94b29b9eeaef1afaddbd0f6a32b443"
     },
     {
       "id": "C4",
       "title": "技能加载与三个内置技能",
-      "status": "pending",
+      "status": "in_progress",
       "commit": "feat(skills): 技能目录发现与内置技能",
       "deliverables": [
         "src/maa/skills.py",
