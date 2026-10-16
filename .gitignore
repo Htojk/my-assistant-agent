@@ -1,0 +1,37 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# --- 测试 / 缓存 ---
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- 密钥与本地配置（绝不提交）---
+.env
+.mcp.json
+.maa/
+*.db
+sessions.db
+
+# --- 运行时产物 ---
+out/
+workspace/
+*.log
+
+# --- Claude Code ---
+.claude/settings.local.json
+# harness 的运行时状态（拦截计数 / 提醒去重），台账 tasks.json 本身要提交
+.claude/harness/.state.json
+
+# --- 编辑器 / 系统 ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

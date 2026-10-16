@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "my-assistant-agent"
+version = "0.1.0"
+description = "通用助手 agent：写文章 / 编码 / 任务规划，支持 skills、沙箱、可配置 MCP 的 CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Htojk" }]
+keywords = ["agent", "deepagents", "langchain", "cli", "mcp", "skills"]
+
+dependencies = [
+    # --- agent harness 内核 ---
+    "deepagents>=0.7.24,<0.8",
+    # --- LangChain 核心 + MCPAdapter（含 fastmcp）---
+    "langchain[mcp]>=1.4.5",
+    # --- 模型 provider ---
+    "langchain-openai>=1.7.1",
+    "langchain-anthropic>=1.7.6",
+    # --- 会话持久化（interrupt_on / permissions.interrupt 的硬依赖）---
+    "langgraph-checkpoint-sqlite>=2",
+    # --- CLI ---
+    "typer>=0.12",
+    "rich>=13",
+    "prompt-toolkit>=3",
+    # --- 配置 ---
+    "pydantic>=2.7",
+    "python-dotenv>=1",
+    "tomli-w>=1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+# 远程沙箱（按需安装其一）
+e2b = ["langchain-e2b"]
+daytona = ["langchain-daytona"]
+modal = ["langchain-modal"]
+
+[project.scripts]
+maa = "maa.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maa"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
