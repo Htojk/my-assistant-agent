@@ -13,7 +13,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from maa import profiles
+from maa import profiles, skills, subagents
 from maa.config import Config, ConfigError
 
 
@@ -114,7 +114,7 @@ def test_readonly_模式下写操作被拒(workspace: Path) -> None:
 
 def test_profile_名字错了给出可选清单(workspace: Path) -> None:
     with pytest.raises(ConfigError, match="general"):
-        profiles.build_agent(Config(), "writer", workspace=workspace, model=_stub_model())
+        profiles.build_agent(Config(), "nope", workspace=workspace, model=_stub_model())
 
 
 def test_模型字符串不能用时给出人话(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,3 +126,249 @@ def test_模型字符串不能用时给出人话(monkeypatch: pytest.MonkeyPatch
 
 def _stub_model() -> ScriptedChatModel:
     return ScriptedChatModel(replies=[AIMessage(content="嗯")])
+
+
+# --------------------------------------------------------------------------- C6：四种 profile
+
+
+@pytest.mark.parametrize("name", sorted(profiles.REGISTRY))
+def test_四种_profile_都建得出来(name: str, workspace: Path) -> None:
+    """验收的前半条。挑不出名字来就说明 REGISTRY 里那条写坏了。"""
+    built = profiles.build_agent(Config(), name, workspace=workspace, model=_stub_model())
+
+    assert built.profile.name == name
+    assert profiles.tool_names(built)
+
+
+def test_planner_的工具表里有_write_todos(workspace: Path) -> None:
+    """验收的后半条 —— `TodoListMiddleware` 漏挂是静默的，工具直接不存在。"""
+    names = profiles.tool_names(
+        profiles.build_agent(Config(), "planner", workspace=workspace, model=_stub_model())
+    )
+
+    assert "write_todos" in names
+
+
+def test_writer_摸不到_shell(workspace: Path) -> None:
+    """写文章不需要跑命令。没有 `execute` 就没有"这条提示词被曲解成执行脚本"这条路。"""
+    names = profiles.tool_names(
+        profiles.build_agent(Config(), "writer", workspace=workspace, model=_stub_model())
+    )
+
+    assert "execute" not in names
+    assert "delete" not in names
+    # 但该有的还得有，否则白名单就成了"什么都没给"
+    assert {"read_file", "write_file", "edit_file", "grep"} <= set(names)
+
+
+def test_planner_也没有_shell(workspace: Path) -> None:
+    """规划要能读情况、能把方案写下来，但不该有副作用。"""
+    names = profiles.tool_names(
+        profiles.build_agent(Config(), "planner", workspace=workspace, model=_stub_model())
+    )
+
+    assert "execute" not in names
+    assert {"read_file", "write_file"} <= set(names)
+
+
+def test_coder_要得到_shell(workspace: Path) -> None:
+    """coder 是唯一一个必须能跑构建和测试的 —— 这条反过来验证白名单没被串用。"""
+    names = profiles.tool_names(
+        profiles.build_agent(Config(), "coder", workspace=workspace, model=_stub_model())
+    )
+
+    assert "execute" in names
+
+
+def test_白名单少了_read_file_当场报错() -> None:
+    """中间件的硬要求。让它在我们这儿就炸，别等到装配到一半才炸。"""
+    with pytest.raises(ValueError, match="read_file"):
+        profiles.Profile(
+            name="坏掉的",
+            description="",
+            system_prompt="",
+            tools=("ls", "glob"),
+        )
+
+
+def test_readonly_下白名单不绕过权限(workspace: Path) -> None:
+    """白名单和后端权限得配在同一套东西上。
+
+    如果白名单自己重造一份不带 permissions 的中间件，readonly 就漏了 ——
+    writer 会以为自己不能写，其实能写。
+    """
+    from maa.config import BackendConfig
+
+    cfg = Config(backend=BackendConfig(mode="readonly"))
+    model = ScriptedChatModel(replies=[_write_call("/漏了.md", "x"), AIMessage(content="试过了")])
+    built = profiles.build_agent(cfg, "writer", workspace=workspace, model=model)
+
+    built.graph.invoke({"messages": [HumanMessage("写个文件")]})
+
+    assert not (workspace / "漏了.md").exists()
+
+
+def test_planner_真能把计划写到磁盘上(workspace: Path) -> None:
+    """planner 的白名单是四个人里最窄的。
+
+    窄到把 `write_file` 也一起砍掉就完蛋了 —— 它的全部产出就是那个文件。这条锁住它。
+    """
+    model = ScriptedChatModel(
+        replies=[_write_call("/plan.md", "1. 摸情况\n2. 出方案\n"), AIMessage(content="好了")]
+    )
+    built = profiles.build_agent(Config(), "planner", workspace=workspace, model=model)
+
+    built.graph.invoke(
+        {"messages": [HumanMessage("帮我规划一下")]},
+        config={"configurable": {"thread_id": "planner-1"}},
+    )
+
+    assert (workspace / "plan.md").read_text(encoding="utf-8").startswith("1.")
+
+
+# --------------------------------------------------------------------------- 子代理
+
+
+def test_general_也有_task(workspace: Path) -> None:
+    """内置的 `general-purpose` 子代理是 SDK 自动加的，不用我们自己挂。
+
+    实测出来的：哪怕 `subagents=None`，`task` 照样在工具表里。想不给都难 ——
+    SDK 只在"调用方已经给了同名规格"或"harness profile 明令禁用"时才不加。
+    """
+    names = profiles.tool_names(
+        profiles.build_agent(Config(), "general", workspace=workspace, model=_stub_model())
+    )
+
+    assert "task" in names
+
+
+def test_各_profile_挂的子代理对得上(workspace: Path) -> None:
+    expected = {
+        "general": (),
+        "writer": ("outliner",),
+        "coder": ("code-reviewer",),
+        "planner": ("researcher",),
+    }
+
+    for name, want in expected.items():
+        built = profiles.build_agent(Config(), name, workspace=workspace, model=_stub_model())
+        assert built.subagents == want, name
+
+
+def test_子代理真的挂到图上了(workspace: Path) -> None:
+    """Banner 里那个 `built.subagents` 是我们自己记的账，不算数。
+
+    从**建好的图**里能摸到的证据只有 `task` 工具的描述 —— 它列出的就是模型能派的
+    对象。规格造对了但没挂上去，只有这条能发现。
+    """
+    expected = {
+        "general": {"general-purpose"},
+        "writer": {"general-purpose", "outliner"},
+        "coder": {"general-purpose", "code-reviewer"},
+        "planner": {"general-purpose", "researcher"},
+    }
+
+    for name, want in expected.items():
+        built = profiles.build_agent(Config(), name, workspace=workspace, model=_stub_model())
+        assert _advertised_subagents(built) == want, name
+
+
+def _advertised_subagents(built: profiles.BuiltAgent) -> set[str]:
+    """`task` 描述里列的 agent 类型。
+
+    只看"行首是 `- 名字:`"的那些 —— 描述里还有一堆普通的项目符号说明，
+    不筛的话它们会被当成分支名混进来。
+    """
+    node = built.graph.nodes["tools"]
+    bound = getattr(node, "bound", None) or node
+    description = bound._tools_by_name["task"].description
+
+    found: set[str] = set()
+    for line in description.splitlines():
+        if not line.startswith("- ") or ":" not in line:
+            continue
+        head = line.removeprefix("- ").split(":", 1)[0].strip()
+        if head and " " not in head:  # 普通说明句的第一个词后面一定还有词
+            found.add(head)
+    return found
+
+
+@pytest.mark.parametrize("name", sorted(subagents.REGISTRY))
+def test_子代理规格能变成_sdk_要的_dict(name: str) -> None:
+    spec = subagents.build(subagents.get(name), backend=object(), model=_stub_model())
+
+    assert spec["name"] == name
+    assert spec["description"] and spec["system_prompt"]
+    # 不设 tools 才会继承主 agent 的工具（MCP 工具走的就是这条路）
+    assert "tools" not in spec
+    assert isinstance(spec["middleware"], list)
+
+
+def test_审查子代理改不了文件() -> None:
+    """`code-reviewer` 的价值全在"它只能读" —— 能写的话它就自己去改了。"""
+    spec = subagents.build(subagents.CODE_REVIEWER, backend=object())
+
+    frozen = [tool.name for tool in spec["middleware"][0].tools]
+
+    assert "write_file" not in frozen
+    assert "edit_file" not in frozen
+    assert "execute" not in frozen
+    assert "read_file" in frozen
+
+
+def test_子代理名字错了给出可选清单() -> None:
+    with pytest.raises(ConfigError, match="researcher"):
+        subagents.get("code_reviewer")  # 下划线不是连字符 —— 最常见的拼法错误
+
+
+def test_子代理拿到的是主_agent_那一套后端和权限(workspace: Path, monkeypatch) -> None:
+    """子代理得跟主 agent 走同一个沙箱。
+
+    不然 readonly 模式下的子代理会从硬盘另一头把文件写进去 —— 主 agent 被拦住了，
+    它派出去的手下没被拦住，这种漏洞比没做权限还糟（看起来是安全的）。
+    """
+    from maa.config import BackendConfig
+
+    seen: dict[str, Any] = {}
+    real = subagents.build_all
+
+    def spy(names: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        seen.update(kwargs)
+        return real(names, **kwargs)
+
+    monkeypatch.setattr(profiles.subagents, "build_all", spy)
+    cfg = Config(backend=BackendConfig(mode="readonly"))
+    profiles.build_agent(cfg, "coder", workspace=workspace, model=_stub_model())
+
+    assert seen["backend"] is not None
+    assert any(
+        permission.mode == "deny" and "write" in permission.operations
+        for permission in seen["permissions"]
+    )
+
+
+# --------------------------------------------------------------------------- 看家技能
+
+
+def test_看家技能指向真实路径(project: Path, workspace: Path) -> None:
+    """提示里给的是**虚拟**路径 —— 后端路由挂上了才读得到。"""
+    built = profiles.build_agent(Config(), "writer", workspace=workspace, model=_stub_model())
+    hint = profiles._skill_hint(built.profile, skills.scan(built.skill_sources))
+
+    assert "article-writing" in hint
+    assert "/skills/" in hint
+
+
+def test_技能没装就静默跳过(workspace: Path) -> None:
+    """用户可能压根没装那个技能。提示里留个空段落比报错好。"""
+    profile = profiles.Profile(
+        name="x", description="", system_prompt="", preferred_skills=("不存在的技能",)
+    )
+
+    assert profiles._skill_hint(profile, skills.ScanResult()) == ""
+
+
+def test_没点技能就不加那一段(workspace: Path) -> None:
+    built = profiles.build_agent(Config(), "general", workspace=workspace, model=_stub_model())
+
+    assert profiles._skill_hint(built.profile, skills.scan(built.skill_sources)) == ""

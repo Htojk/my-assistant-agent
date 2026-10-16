@@ -163,8 +163,13 @@ def _load_mcp(cfg: Config) -> mcp.Loaded:
 def _show_banner(session: Session) -> None:
     built = session.built
     count = len(skills.scan(built.skill_sources).skills)
+    # 子代理跟 profile 写在一起：它们是一回事（profile 决定派谁），
+    # 分开写只会让 banner 多出一行来。
+    profile = built.profile.name
+    if built.subagents:
+        profile += f"（子代理：{'、'.join(built.subagents)}）"
     ui.banner(
-        profile=built.profile.name,
+        profile=profile,
         model=built.model_spec,
         backend=backends.describe(built.backend_cfg, built.workspace),
         workspace=paths.display(built.workspace),
