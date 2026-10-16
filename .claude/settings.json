@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/harness/progress.py\" hook-session-start",
+            "shell": "bash",
+            "timeout": 20,
+            "statusMessage": "读取任务台账"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/harness/progress.py\" hook-stop",
+            "shell": "bash",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/harness/progress.py\" hook-post-tool",
+            "shell": "bash",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

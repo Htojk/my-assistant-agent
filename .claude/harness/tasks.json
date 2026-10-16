@@ -1,0 +1,156 @@
+{
+  "project": "my-assistant-agent",
+  "source_of_truth": "docs/PLAN.md",
+  "updated_at": "2026-10-16T07:47:58Z",
+  "rules": [
+    "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
+    "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
+    "每次提交前必须 pytest 通过。",
+    "提交信息必须写清本次的功能点。"
+  ],
+  "tasks": [
+    {
+      "id": "C1",
+      "title": "开发计划与项目骨架",
+      "status": "done",
+      "commit": "docs: 开发计划——需求矩阵、目录结构、提交计划",
+      "deliverables": [
+        "docs/PLAN.md",
+        "README.md",
+        "pyproject.toml",
+        ".gitignore",
+        ".gitattributes",
+        ".env.example"
+      ],
+      "acceptance": "六个文件齐备；pyproject 声明的依赖版本与实测环境一致（deepagents 0.7.24 / langchain 1.4.5）",
+      "notes": "6 个文件 576 行，无 src 代码",
+      "sha": "c9cb763"
+    },
+    {
+      "id": "C2",
+      "title": "Claude Code 续跑 harness",
+      "status": "in_progress",
+      "commit": "chore(harness): Claude Code 续跑 harness——任务台账与三个 hook",
+      "deliverables": [
+        ".claude/harness/tasks.json",
+        ".claude/harness/progress.py",
+        ".claude/settings.json",
+        "PROGRESS.md"
+      ],
+      "acceptance": "SessionStart 注入当前任务；Stop 在台账未清零时返回 decision=block 并喂回下一个任务；progress.py 五个子命令可用",
+      "notes": "jq 未安装，hook 的 stdin JSON 必须由 progress.py 用 Python 解析。"
+    },
+    {
+      "id": "C3",
+      "title": "最小闭环：配置 / 沙箱后端 / CLI",
+      "status": "pending",
+      "commit": "feat(cli): 最小闭环——配置加载、沙箱后端工厂、CLI 骨架",
+      "deliverables": [
+        "src/maa/__init__.py",
+        "src/maa/__main__.py",
+        "src/maa/paths.py",
+        "src/maa/config.py",
+        "src/maa/backends.py",
+        "src/maa/profiles.py",
+        "src/maa/cli.py",
+        "src/maa/ui.py"
+      ],
+      "acceptance": "maa run \"在 out/ 下写一篇 800 字的关于 X 的文章\" 真的在磁盘上写出文件；maa doctor 可运行",
+      "notes": "MVP 通道起点。本步只做 general profile，不含多 profile / 审批 / 会话恢复。"
+    },
+    {
+      "id": "C4",
+      "title": "技能加载与三个内置技能",
+      "status": "pending",
+      "commit": "feat(skills): 技能目录发现与内置技能",
+      "deliverables": [
+        "src/maa/skills.py",
+        "skills/article-writing/SKILL.md",
+        "skills/coding/SKILL.md",
+        "skills/task-planning/SKILL.md",
+        "tests/test_skills.py"
+      ],
+      "acceptance": "多源技能目录按优先级去重；agent 能用 read_file 读到 SKILL.md（无 load_skill 工具）",
+      "notes": "技能目录低→高优先级：~/.maa/skills → ~/.claude/skills → ~/.agents/skills → <project>/.maa/skills → <project>/.agents/skills → config.skills.extra_dirs"
+    },
+    {
+      "id": "C5",
+      "title": "MCP 可配置与动态加载",
+      "status": "pending",
+      "commit": "feat(mcp): MCP 配置读取、校验与动态加载",
+      "deliverables": [
+        "src/maa/mcp.py",
+        ".mcp.json.example",
+        "tests/test_mcp.py"
+      ],
+      "acceptance": "合法 .mcp.json 能列出工具；非法配置（字符串指向非 URL、stdio 缺 command/args）给出可读报错",
+      "notes": "用 langchain.mcp.MCPAdapter（beta，需抑制 LangChainBetaWarning）；transport 一律省略由 SDK 推断。"
+    },
+    {
+      "id": "C6",
+      "title": "三种能力 profile 与子代理",
+      "status": "pending",
+      "commit": "feat(agent): writer / coder / planner 三种 profile 与子代理",
+      "deliverables": [
+        "src/maa/subagents.py",
+        "src/maa/profiles.py",
+        "tests/test_profiles.py"
+      ],
+      "acceptance": "四种 profile 都能建出 agent；planner 的工具表里确实存在 write_todos；writer 的工具表里没有 execute",
+      "notes": "read_file 必须始终留在工具白名单里，否则 FilesystemMiddleware 抛 ValueError。用 tools=[...] 而非 permissions= 做裁剪。"
+    },
+    {
+      "id": "C7",
+      "title": "会话持久化与恢复",
+      "status": "pending",
+      "commit": "feat(session): SqliteSaver 会话持久化与 --resume",
+      "deliverables": [
+        "src/maa/session.py",
+        "src/maa/cli.py",
+        "tests/test_session.py"
+      ],
+      "acceptance": "maa chat 结束后 maa chat --resume <id> 能接上上一轮上下文",
+      "notes": "SqliteSaver 落在 ~/.maa/sessions.db；interrupt_on 依赖 checkpointer。"
+    },
+    {
+      "id": "C8",
+      "title": "HITL 审批循环",
+      "status": "pending",
+      "commit": "feat(approval): 危险工具的 HITL 审批循环",
+      "deliverables": [
+        "src/maa/approval.py",
+        "tests/test_approval.py"
+      ],
+      "acceptance": "local 模式下 execute / write_file / edit_file / delete 触发人工确认；yolo 模式不触发",
+      "notes": "permissions= 管不住 execute 和沙箱后端，本地模式的安全边界只能是 interrupt_on。"
+    },
+    {
+      "id": "C9",
+      "title": "单元与冒烟测试补全",
+      "status": "pending",
+      "commit": "test: 单元、集成与冒烟测试补全",
+      "deliverables": [
+        "tests/conftest.py",
+        "tests/test_config.py",
+        "tests/test_paths.py",
+        "tests/test_backends.py",
+        "tests/test_cli.py"
+      ],
+      "acceptance": "pytest 全绿；maa doctor / maa --help 子进程冒烟通过",
+      "notes": "测试中绝不调用真模型，一律用假 model。"
+    },
+    {
+      "id": "C10",
+      "title": "INDEX.md 逐篇技术对照",
+      "status": "pending",
+      "commit": "docs: INDEX.md 逐篇技术对照与架构说明",
+      "deliverables": [
+        "docs/INDEX-COVERAGE.md",
+        "docs/ARCHITECTURE.md",
+        "CHANGELOG.md"
+      ],
+      "acceptance": "deepagents 文档索引里每篇提到的技术都标注了「已引入 / 未引入 + 原因」；README.md 里的悬空链接不再 404",
+      "notes": "这是原始需求的第 ③ 步，必须放在最后做。"
+    }
+  ]
+}
