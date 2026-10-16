@@ -3,8 +3,8 @@
 > 本文件由 `.claude/harness/progress.py` 自动生成，**请勿手改**。
 > 改状态用：`status` / `next` / `start <id>` / `done <id>` / `block <id> --reason "…"`
 
-**进度：9/10**　`██████████████████░░`
-最后更新：2026-10-16T09:47:34Z
+**进度：10/10**　`████████████████████`
+最后更新：2026-10-16T09:54:54Z
 
 | # | 提交 | 任务 | 状态 | commit |
 |---|---|---|---|---|
@@ -17,13 +17,12 @@
 | C7 | `feat(session): SqliteSaver 会话持久化与 --resume` | 会话持久化与恢复 | ✅ done | `2569b84` |
 | C8 | `feat(approval): 危险工具的 HITL 审批循环` | HITL 审批循环 | ✅ done | `65a941b` |
 | C9 | `test:单元、集成与冒烟测试补全` | 单元与冒烟测试补全 | ✅ done | `cc555ad` |
-| C10 | `docs: INDEX.md 逐篇技术对照与架构说明` | INDEX.md 逐篇技术对照 | 🔨 in_progress | `—` |
+| C10 | `9874d9c` | INDEX.md 逐篇技术对照 | ✅ done | `—` |
 
 ## 当前
 
-**C10 — INDEX.md 逐篇技术对照**（in_progress）
+（没有进行中 / 待办任务）
 
-- 提交信息：docs: INDEX.md 逐篇技术对照与架构说明
-- 交付物：docs/INDEX-COVERAGE.md, docs/ARCHITECTURE.md, CHANGELOG.md
-- 验收：deepagents 文档索引里每篇提到的技术都标注了「已引入 / 未引入 + 原因」；README.md 里的悬空链接不再 404
-- 备注：这是原始需求的第 ③ 步，必须放在最后做。
+---
+
+🎉 **全部任务已完成**，Stop 守卫已放行。

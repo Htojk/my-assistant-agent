@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T09:47:34Z",
+  "updated_at": "2026-10-16T09:54:54Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -150,15 +150,15 @@
     {
       "id": "C10",
       "title": "INDEX.md 逐篇技术对照",
-      "status": "in_progress",
-      "commit": "docs: INDEX.md 逐篇技术对照与架构说明",
+      "status": "done",
+      "commit": "9874d9c",
       "deliverables": [
         "docs/INDEX-COVERAGE.md",
         "docs/ARCHITECTURE.md",
         "CHANGELOG.md"
       ],
       "acceptance": "deepagents 文档索引里每篇提到的技术都标注了「已引入 / 未引入 + 原因」；README.md 里的悬空链接不再 404",
-      "notes": "这是原始需求的第 ③ 步，必须放在最后做。"
+      "notes": "56 篇逐篇对照 + 架构说明 + 变更记录；实测纠正 PLAN §5.4 的两处 MCP 描述，README 悬空链接已通"
     }
   ]
 }
