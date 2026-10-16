@@ -64,21 +64,41 @@ def fake_openai() -> Iterator[str]:
         server.server_close()
 
 
-@pytest.fixture
-def home_with_config(maa_home: Path) -> Path:
-    """照 README 的样子写一份配置 —— 顺带验证模板那套键名是能用的。"""
-    maa_home.mkdir(parents=True, exist_ok=True)
-    (maa_home / "config.toml").write_text(
+def write_config(home: Path, *, approval: str = "manual") -> Path:
+    """照 README 的样子写一份配置 —— 顺带验证模板那套键名是能用的。
+
+    `approval` 默认跟产品默认一致（manual）。要跑"一键到底"的端到端得显式给
+    `yolo`：管道里没人能点头，manual 模式下写操作会被拒。
+    """
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text(
         "[models]\n"
         'default = "openai:gpt-5.5"\n'
         "\n"
         "[models.providers.openai]\n"
         'base_url_env = "OPENAI_BASE_URL"\n'
         'api_key_env = "OPENAI_API_KEY"\n'
-        "use_responses_api = false\n",
+        "use_responses_api = false\n"
+        "\n"
+        "[backend]\n"
+        'mode = "local"\n'
+        'workspace = "."\n'
+        "\n"
+        "[approval]\n"
+        f'mode = "{approval}"\n',
         encoding="utf-8",
     )
-    return maa_home
+    return home
+
+
+@pytest.fixture
+def home_with_config(maa_home: Path) -> Path:
+    """配好的 `~/.maa`，审批**关掉**。
+
+    端到端那几条测的是"配置 → HTTP → 工具执行 → 产物落盘"这条链路，跑在管道里
+    没人能点头 —— 审批行为由 test_approval 专门测，这里显式关掉免得两条线互相绊。
+    """
+    return write_config(maa_home, approval="yolo")
 
 
 @pytest.fixture

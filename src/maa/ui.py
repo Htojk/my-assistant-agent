@@ -59,16 +59,19 @@ def banner(
     model: str,
     backend: str,
     workspace: str,
+    approval: str = "",
     skills: str = "",
     mcp: str = "",
 ) -> None:
     """开工前把"在什么环境下、用什么模型、动哪个目录"讲清楚。
 
-    local 后端会直接在你机器上跑 shell，这个提醒不能省。
+    local 后端会直接在你机器上跑 shell，这个提醒不能省 —— 审批那一行挨着它，
+    因为这两件事是一回事：本地模式下的安全边界就是审批。
     """
     lines = [
         f"[bold]{profile}[/bold]  ·  {model}",
         f"[dim]后端[/dim]  {backend}",
+        f"[dim]审批[/dim]  {approval}",
         f"[dim]目录[/dim]  {workspace}",
     ]
     for label, value in (("技能", skills), ("MCP", mcp)):
@@ -91,6 +94,26 @@ def _salient_arg(args: dict[str, Any]) -> str:
         if isinstance(value, str) and value:
             return value if len(value) <= 80 else f"{value[:77]}…"
     return ""
+
+
+def approval(name: str, args: Sequence[tuple[str, str]], *, note: str = "") -> None:
+    """一个等着点头的动作。`args` 是 `(键, 值)` 列表（见 `approval.arguments()`）。
+
+    参数**不掐成一行摘要**（跟 `tool_call` 不同）：人要批的就是这些字，得看得见。
+
+    内容用 `Text.append` 逐段拼，不走 markup —— 参数里出现 `[stderr]` 或者正则
+    `[a-z]` 都很正常，当成样式标签吃掉了就等于没给人看（同 `raw()` 那条教训）。
+    """
+    body = Text()
+    body.append(name, style="bold")
+    for key, value in args:
+        body.append(f"\n{key}  ", style="dim")
+        body.append(str(value))
+    if note:
+        body.append(f"\n{note}", style="dim")
+    console.print(
+        Panel(body, title="要执行", title_align="left", border_style="yellow", expand=False)
+    )
 
 
 def answer(text: str) -> None:

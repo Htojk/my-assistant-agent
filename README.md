@@ -61,6 +61,10 @@ MCP 配置：项目根 `.mcp.json`，或 `~/.maa/mcp.json`
 **没有任何隔离**。`virtual_mode` 对 shell 无效。
 
 - 默认 `approval.mode = "manual"`：`write_file` / `edit_file` / `delete` / `execute` 都会先问你。
+  问的时候 `y` 批准、`a` 这次会话里后面都不问、**回车是不批准**（直接写一行字则是拒绝的理由，
+  会转给模型）。
+- 管道 / CI 里没人能点头，所以写操作会被一律拒掉（`maa run` 接空 stdin 就是这条路）。
+  要在自动化里跑到底，得显式设成 `approval.mode = "yolo"`。
 - 想更安全：把 `backend.mode` 改成 `readonly`，或接远程沙箱（`remote`）。
 - 别在你不信任的目录下用 `approval.mode = "yolo"`。
 

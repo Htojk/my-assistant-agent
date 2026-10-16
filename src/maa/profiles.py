@@ -276,12 +276,16 @@ def build_agent(
     model: str | BaseChatModel | None = None,
     extra_tools: tuple[BaseTool | Any, ...] = (),
     checkpointer: Any | None = None,
+    interrupt_on: dict[str, Any] | None = None,
 ) -> BuiltAgent:
     """装配 agent。每会话建一次 —— MCP 工具是构图期参数，只能这么来。
 
     `extra_tools` 是给调用方塞现成工具的（C5 的 MCP 工具走这条）。这里不自己去
     连 MCP：那是一次网络 I/O，塞进装配会让 doctor 和每个测试都跟着变慢变飘。
     连不连、连谁，由调用方决定。
+
+    `interrupt_on` 是审批表（C8），形状见 `approval.gated()`。同样只接现成的：
+    "问不问、怎么问"是 CLI 的事，这里只管把表交给图。
     """
     profile = get_profile(profile_name)
     resolved_workspace = workspace or paths.resolve_workspace(cfg.backend.workspace)
@@ -308,6 +312,7 @@ def build_agent(
         backend=backend,
         permissions=permissions or None,
         checkpointer=checkpointer,
+        interrupt_on=interrupt_on or None,
         name=f"maa-{profile.name}",
     )
 

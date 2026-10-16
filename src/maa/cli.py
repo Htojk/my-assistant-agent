@@ -11,7 +11,7 @@ import importlib.metadata as metadata
 import os
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,9 +19,12 @@ from typing import Any
 import typer
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
-from . import __version__, backends, mcp, paths, profiles, session, skills, ui
+from . import __version__, approval, backends, mcp, paths, profiles, session, skills, ui
 from .config import (
+    ApprovalConfig,
     Config,
     ConfigError,
     load_config,
@@ -112,18 +115,32 @@ def _load_config(options: GlobalOptions) -> Config:
 
 @dataclass
 class Session:
-    """一次会话的装配结果。带上 MCP 的连接情况，因为 banner 要显示它。"""
+    """一次会话的装配结果。带上 MCP 的连接情况和审批人，因为 banner 要显示前者、
+    每一轮要问后者。"""
 
     built: profiles.BuiltAgent
     mcp: mcp.Loaded = field(default_factory=mcp.Loaded)
+    approval_cfg: ApprovalConfig = field(default_factory=ApprovalConfig)
+    approver: approval.Approver = field(default_factory=approval.Approver)
+
+
+def _checkpointer(store: session.Store | None) -> Any:
+    """图总得有个 checkpointer，`run` 也要。
+
+    审批（`interrupt_on`）停下来之后要从停下那点接着跑，而"停下那点"是记在
+    checkpointer 里的。实测：没有它时中断**本身**不报错（照样停），但接着跑会抛
+    `RuntimeError: Cannot use Command(resume=...) without checkpointer` ——
+    审到一半翻车比不问还糟。
+
+    - `chat` 给会话库那个（`SqliteSaver`）：多轮上下文和跨进程恢复都靠它。
+    - `run` 给内存的：不是要记历史，只是让审批能停一下、能接着跑。一次性任务
+      没有"下次接着聊"这回事，还是不该往会话库里写。
+    """
+    return store.saver if store is not None else InMemorySaver()
 
 
 def _assemble(options: GlobalOptions, *, store: session.Store | None = None) -> Session:
-    """按选项装配 agent。每会话一次 —— MCP 工具是构图期参数，改不了。
-
-    给了 `store` 就把它的 checkpointer 挂上去：多轮之间靠它记上下文，跨进程恢复
-    也靠它。`run` 不给 —— 一次性任务没有"下次接着聊"这回事，不该往会话库里写。
-    """
+    """按选项装配 agent。每会话一次 —— MCP 工具是构图期参数，改不了。"""
     cfg = _load_config(options)
     workspace = (
         paths.resolve_workspace(options.workspace)
@@ -139,11 +156,12 @@ def _assemble(options: GlobalOptions, *, store: session.Store | None = None) -> 
             workspace=workspace,
             model=options.model,
             extra_tools=tuple(loaded.tools),
-            checkpointer=store.saver if store is not None else None,
+            checkpointer=_checkpointer(store),
+            interrupt_on=approval.gated(cfg.approval),
         )
     for problem in loaded.problems:
         ui.warn(f"MCP {problem}")
-    return Session(built=built, mcp=loaded)
+    return Session(built=built, mcp=loaded, approval_cfg=cfg.approval)
 
 
 def _load_mcp(cfg: Config) -> mcp.Loaded:
@@ -173,6 +191,7 @@ def _show_banner(assembled: Session) -> None:
         model=built.model_spec,
         backend=backends.describe(built.backend_cfg, built.workspace),
         workspace=paths.display(built.workspace),
+        approval=approval.describe(assembled.approval_cfg),
         skills=f"{count} 个（maa skills list 看详情）" if count else "无",
         mcp=_mcp_summary(assembled.mcp),
     )
@@ -189,25 +208,53 @@ def _mcp_summary(loaded: mcp.Loaded) -> str:
     )
 
 
-def _run_turn(built: profiles.BuiltAgent, prompt: str, thread_id: str) -> str:
+def _run_turn(
+    built: profiles.BuiltAgent,
+    prompt: str,
+    thread_id: str,
+    *,
+    approver: approval.Approver | None = None,
+) -> str:
     """跑一轮，边跑边把工具调用和回复打到终端。返回最后一段回复文本。
+
+    图会在危险工具前面停下来（C8 的 `interrupt_on`），所以这里是个循环：跑到停
+    就问你，你点头（或拒绝）之后**从停下那一点接着跑** —— 不是重跑一遍，模型也
+    不会被再问一次它已经答过的东西。
+
+    多出来的那个 `approver` 参数是给 `run` 命令用的：它没有会话，每次现造一个。
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    who = approver if approver is not None else approval.Approver()
+    pending: Any = {"messages": [HumanMessage(prompt)]}
+
+    while True:
+        final_text, requests = _drain(built.graph, pending, config)
+        if not requests:
+            return final_text
+        decisions: list[dict[str, Any]] = []
+        for request in requests:
+            decisions += who.decisions(request)
+        pending = Command(resume={"decisions": decisions})
+
+
+def _drain(graph: Any, inputs: Any, config: dict[str, Any]) -> tuple[str, list[Mapping[str, Any]]]:
+    """跑一段（新输入或者"接着上次"），把过程打到终端。
+
+    返回（最后一段回复, 待审批的请求）。待审批的可能是空表 —— 那就跑完了。
 
     同时订阅 updates（拿结构：谁调了什么工具）和 messages（拿 token 流），
     前者负责"看得见在干什么"，后者负责"不用干等"。
     """
-    inputs = {"messages": [HumanMessage(prompt)]}
-    config = {"configurable": {"thread_id": thread_id}}
-
     final_text = ""
-    for mode, payload in built.graph.stream(
-        inputs, config=config, stream_mode=["updates", "messages"]
-    ):
+    requests: list[Mapping[str, Any]] = []
+    for mode, payload in graph.stream(inputs, config=config, stream_mode=["updates", "messages"]):
         if mode == "messages":
             chunk, _meta = payload
             text = _chunk_text(chunk)
             if text:
                 ui.stream_delta(text)
         elif mode == "updates" and isinstance(payload, dict):
+            requests += approval.pending(payload)
             for update in payload.values():
                 if not isinstance(update, dict):
                     continue
@@ -217,7 +264,7 @@ def _run_turn(built: profiles.BuiltAgent, prompt: str, thread_id: str) -> str:
                             ui.tool_call(call.get("name", "?"), call.get("args"))
                     elif isinstance(message, AIMessage) and not message.tool_calls:
                         final_text = _chunk_text(message) or final_text
-    return final_text
+    return final_text, requests
 
 
 def _chunk_text(message: Any) -> str:
@@ -249,7 +296,9 @@ def run(
     _show_banner(assembled)
 
     try:
-        final_text = _run_turn(assembled.built, prompt, thread_id="run")
+        final_text = _run_turn(
+            assembled.built, prompt, thread_id="run", approver=assembled.approver
+        )
     except KeyboardInterrupt:
         ui.newline()
         ui.warn("已中断")
@@ -338,7 +387,7 @@ def _repl(assembled: Session, store: session.Store, thread_id: str) -> None:
             continue
 
         try:
-            _run_turn(assembled.built, text, thread_id=thread_id)
+            _run_turn(assembled.built, text, thread_id=thread_id, approver=assembled.approver)
         except KeyboardInterrupt:
             ui.newline()
             ui.warn("已中断，可以接着问")
