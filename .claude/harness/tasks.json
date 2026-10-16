@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T09:08:07Z",
+  "updated_at": "2026-10-16T09:23:25Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -121,19 +121,20 @@
     {
       "id": "C8",
       "title": "HITL 审批循环",
-      "status": "in_progress",
+      "status": "done",
       "commit": "feat(approval): 危险工具的 HITL 审批循环",
       "deliverables": [
         "src/maa/approval.py",
         "tests/test_approval.py"
       ],
       "acceptance": "local 模式下 execute / write_file / edit_file / delete 触发人工确认；yolo 模式不触发",
-      "notes": "permissions= 管不住 execute 和沙箱后端，本地模式的安全边界只能是 interrupt_on。"
+      "notes": "interrupt_on 接上审批循环：回车即不批准、问不出来即拒、Ctrl-C 用 reject 补满决定；run 也补了 checkpointer",
+      "sha": "65a941b"
     },
     {
       "id": "C9",
       "title": "单元与冒烟测试补全",
-      "status": "pending",
+      "status": "in_progress",
       "commit": "test: 单元、集成与冒烟测试补全",
       "deliverables": [
         "tests/conftest.py",
