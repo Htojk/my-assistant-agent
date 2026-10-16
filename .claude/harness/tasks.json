@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T09:23:25Z",
+  "updated_at": "2026-10-16T09:47:34Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -134,8 +134,8 @@
     {
       "id": "C9",
       "title": "单元与冒烟测试补全",
-      "status": "in_progress",
-      "commit": "test: 单元、集成与冒烟测试补全",
+      "status": "done",
+      "commit": "test:单元、集成与冒烟测试补全",
       "deliverables": [
         "tests/conftest.py",
         "tests/test_config.py",
@@ -144,12 +144,13 @@
         "tests/test_cli.py"
       ],
       "acceptance": "pytest 全绿；maa doctor / maa --help 子进程冒烟通过",
-      "notes": "测试中绝不调用真模型，一律用假 model。"
+      "notes": "先量覆盖率再补测:165→229 条全绿;顺带修掉 --version 退 2 的真 bug",
+      "sha": "cc555ad"
     },
     {
       "id": "C10",
       "title": "INDEX.md 逐篇技术对照",
-      "status": "pending",
+      "status": "in_progress",
       "commit": "docs: INDEX.md 逐篇技术对照与架构说明",
       "deliverables": [
         "docs/INDEX-COVERAGE.md",
