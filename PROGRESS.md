@@ -3,14 +3,14 @@
 > 本文件由 `.claude/harness/progress.py` 自动生成，**请勿手改**。
 > 改状态用：`status` / `next` / `start <id>` / `done <id>` / `block <id> --reason "…"`
 
-**进度：1/10**　`██░░░░░░░░░░░░░░░░░░`
-最后更新：2026-10-16T07:47:58Z
+**进度：2/10**　`████░░░░░░░░░░░░░░░░`
+最后更新：2026-10-16T07:49:13Z
 
 | # | 提交 | 任务 | 状态 | commit |
 |---|---|---|---|---|
 | C1 | `docs: 开发计划——需求矩阵、目录结构、提交计划` | 开发计划与项目骨架 | ✅ done | `c9cb763` |
-| C2 | `chore(harness): Claude Code 续跑 harness——任务台账与三个 hook` | Claude Code 续跑 harness | 🔨 in_progress | `—` |
-| C3 | `feat(cli): 最小闭环——配置加载、沙箱后端工厂、CLI 骨架` | 最小闭环：配置 / 沙箱后端 / CLI | · pending | `—` |
+| C2 | `chore(harness): Claude Code 续跑 harness——任务台账与三个 hook` | Claude Code 续跑 harness | ✅ done | `a2495b0` |
+| C3 | `feat(cli): 最小闭环——配置加载、沙箱后端工厂、CLI 骨架` | 最小闭环：配置 / 沙箱后端 / CLI | 🔨 in_progress | `—` |
 | C4 | `feat(skills): 技能目录发现与内置技能` | 技能加载与三个内置技能 | · pending | `—` |
 | C5 | `feat(mcp): MCP 配置读取、校验与动态加载` | MCP 可配置与动态加载 | · pending | `—` |
 | C6 | `feat(agent): writer / coder / planner 三种 profile 与子代理` | 三种能力 profile 与子代理 | · pending | `—` |
@@ -21,9 +21,9 @@
 
 ## 当前
 
-**C2 — Claude Code 续跑 harness**（in_progress）
+**C3 — 最小闭环：配置 / 沙箱后端 / CLI**（in_progress）
 
-- 提交信息：chore(harness): Claude Code 续跑 harness——任务台账与三个 hook
-- 交付物：.claude/harness/tasks.json, .claude/harness/progress.py, .claude/settings.json, PROGRESS.md
-- 验收：SessionStart 注入当前任务；Stop 在台账未清零时返回 decision=block 并喂回下一个任务；progress.py 五个子命令可用
-- 备注：jq 未安装，hook 的 stdin JSON 必须由 progress.py 用 Python 解析。
+- 提交信息：feat(cli): 最小闭环——配置加载、沙箱后端工厂、CLI 骨架
+- 交付物：src/maa/__init__.py, src/maa/__main__.py, src/maa/paths.py, src/maa/config.py, src/maa/backends.py, src/maa/profiles.py, src/maa/cli.py, src/maa/ui.py
+- 验收：maa run "在 out/ 下写一篇 800 字的关于 X 的文章" 真的在磁盘上写出文件；maa doctor 可运行
+- 备注：MVP 通道起点。本步只做 general profile，不含多 profile / 审批 / 会话恢复。

@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T07:47:58Z",
+  "updated_at": "2026-10-16T07:49:13Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -29,7 +29,7 @@
     {
       "id": "C2",
       "title": "Claude Code 续跑 harness",
-      "status": "in_progress",
+      "status": "done",
       "commit": "chore(harness): Claude Code 续跑 harness——任务台账与三个 hook",
       "deliverables": [
         ".claude/harness/tasks.json",
@@ -38,12 +38,13 @@
         "PROGRESS.md"
       ],
       "acceptance": "SessionStart 注入当前任务；Stop 在台账未清零时返回 decision=block 并喂回下一个任务；progress.py 五个子命令可用",
-      "notes": "jq 未安装，hook 的 stdin JSON 必须由 progress.py 用 Python 解析。"
+      "notes": "四个文件 891 行；新增 selftest，15/15 通过",
+      "sha": "a2495b0"
     },
     {
       "id": "C3",
       "title": "最小闭环：配置 / 沙箱后端 / CLI",
-      "status": "pending",
+      "status": "in_progress",
       "commit": "feat(cli): 最小闭环——配置加载、沙箱后端工厂、CLI 骨架",
       "deliverables": [
         "src/maa/__init__.py",

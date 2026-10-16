@@ -200,11 +200,12 @@ def read_payload() -> dict:
     """读 hook 的 stdin。
 
     这里必须读**原始字节**再显式按 UTF-8 解码，不能走文本模式：
-    本项目路径含中文（E:\\学习\\agent\\my-assistant-agent），
-    而 Windows 上 sys.stdin 的默认编码是 gbk、errors=surrogateescape。
-    文本模式会把 UTF-8 的中文路径解成别的字符且**不抛异常**，
+    Windows 上 sys.stdin 的默认编码是 gbk、errors=surrogateescape，
+    而 Claude Code 送来的是 UTF-8。只要路径含非 ASCII 字符（中文目录名、
+    中文用户名都算），文本模式就会把它解成别的字符且**不抛异常**，
     于是 relative_to() 得到错的相对路径、fnmatch 匹配不上，
     PostToolUse 钩子就静默失效了 —— 这正是 selftest 要守住的东西。
+    （本项目最初放在 E:\\学习\\... 下，是真踩到过这个坑才加的防护。）
     """
     stream = getattr(sys.stdin, "buffer", None)
     try:
