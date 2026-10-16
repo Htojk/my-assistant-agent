@@ -94,6 +94,8 @@ class BuiltAgent:
     model_spec: str
     model: BaseChatModel = field(repr=False)
     skill_sources: list[skills.SkillSource] = field(default_factory=list)
+    extra_tools: tuple[Any, ...] = ()
+    """调用方塞进来的现成工具（今天只有 MCP 工具）。列出来是为了能显示个数。"""
 
 
 def build_model(cfg: Config, override: str | None = None) -> BaseChatModel:
@@ -142,7 +144,12 @@ def build_agent(
     extra_tools: tuple[BaseTool | Any, ...] = (),
     checkpointer: Any | None = None,
 ) -> BuiltAgent:
-    """装配 agent。每会话建一次 —— MCP 工具是构图期参数，只能这么来。"""
+    """装配 agent。每会话建一次 —— MCP 工具是构图期参数，只能这么来。
+
+    `extra_tools` 是给调用方塞现成工具的（C5 的 MCP 工具走这条）。这里不自己去
+    连 MCP：那是一次网络 I/O，塞进装配会让 doctor 和每个测试都跟着变慢变飘。
+    连不连、连谁，由调用方决定。
+    """
     profile = get_profile(profile_name)
     resolved_workspace = workspace or paths.resolve_workspace(cfg.backend.workspace)
 
@@ -172,6 +179,7 @@ def build_agent(
         model_spec=model_spec,
         model=chat_model,
         skill_sources=sources,
+        extra_tools=tuple(extra_tools),
     )
 
 

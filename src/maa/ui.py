@@ -42,7 +42,15 @@ def error(message: str) -> None:
     err_console.print(f"{BAD} [red]{message}[/red]")
 
 
-def banner(*, profile: str, model: str, backend: str, workspace: str, skills: str = "") -> None:
+def banner(
+    *,
+    profile: str,
+    model: str,
+    backend: str,
+    workspace: str,
+    skills: str = "",
+    mcp: str = "",
+) -> None:
     """开工前把"在什么环境下、用什么模型、动哪个目录"讲清楚。
 
     local 后端会直接在你机器上跑 shell，这个提醒不能省。
@@ -52,8 +60,9 @@ def banner(*, profile: str, model: str, backend: str, workspace: str, skills: st
         f"[dim]后端[/dim]  {backend}",
         f"[dim]目录[/dim]  {workspace}",
     ]
-    if skills:
-        lines.append(f"[dim]技能[/dim]  {skills}")
+    for label, value in (("技能", skills), ("MCP", mcp)):
+        if value:
+            lines.append(f"[dim]{label}[/dim]  {value}")
     body = Text.from_markup("\n".join(lines))
     console.print(Panel(body, title="maa", title_align="left", border_style="dim"))
 

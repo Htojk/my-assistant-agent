@@ -95,12 +95,21 @@ def skill_search_paths(project: Path | None = None, extra: Iterable[str] = ()) -
     return dirs
 
 
-def resolve_workspace(raw: str | Path, project: Path | None = None) -> Path:
-    """把 `[backend].workspace` 解析成绝对路径；相对路径按项目根算。"""
+def resolve_path(raw: str | Path, project: Path | None = None) -> Path:
+    """把配置里写的路径解析成绝对路径；相对路径按项目根算，`~` 展开。
+
+    配置里写相对路径，人心里想的都是"相对这个项目"，不是"相对我此刻在哪个
+    目录"—— 后者会让同一份配置在不同 cwd 下指向不同的地方。
+    """
     candidate = Path(raw).expanduser()
     if candidate.is_absolute():
         return candidate.resolve()
     return ((project or project_root()) / candidate).resolve()
+
+
+def resolve_workspace(raw: str | Path, project: Path | None = None) -> Path:
+    """把 `[backend].workspace` 解析成绝对路径；相对路径按项目根算。"""
+    return resolve_path(raw, project)
 
 
 def display(path: Path) -> str:

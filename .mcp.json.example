@@ -1,0 +1,26 @@
+{
+  "_comment": "拷成 .mcp.json（项目级）或 ~/.maa/mcp.json（用户级，优先级更高）。这个 _comment 键本身会被忽略。",
+
+  "mcpServers": {
+    "docs-langchain": {
+      "url": "https://docs.langchain.com/mcp"
+    },
+    "reference-langchain": {
+      "url": "https://reference.langchain.com/mcp"
+    },
+
+    "fs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+
+    "internal": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${INTERNAL_MCP_TOKEN}" }
+    },
+    "sse-legacy": {
+      "url": "https://mcp.example.com/sse",
+      "transport": "sse"
+    }
+  }
+}

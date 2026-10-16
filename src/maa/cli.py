@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata as metadata
 import os
 import sys
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ import typer
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
 
-from . import __version__, backends, paths, profiles, skills, ui
+from . import __version__, backends, mcp, paths, profiles, skills, ui
 from .config import (
     Config,
     ConfigError,
@@ -40,6 +41,9 @@ app.add_typer(config_app, name="config")
 
 skills_app = typer.Typer(no_args_is_help=True, help="技能管理。")
 app.add_typer(skills_app, name="skills")
+
+mcp_app = typer.Typer(no_args_is_help=True, help="MCP 服务管理。")
+app.add_typer(mcp_app, name="mcp")
 
 OPT_CONFIG = typer.Option(None, "--config", "-c", help="配置文件路径")
 OPT_AGENT = typer.Option(None, "--agent", "-a", help="能力 profile")
@@ -103,8 +107,16 @@ def _load_config(options: GlobalOptions) -> Config:
     return load_config(options.config)
 
 
-def _assemble(options: GlobalOptions, *, for_chat: bool = False) -> profiles.BuiltAgent:
-    """按选项装配 agent。每会话一次 —— MCP 工具改不了构图期。"""
+@dataclass
+class Session:
+    """一次会话的装配结果。带上 MCP 的连接情况，因为 banner 要显示它。"""
+
+    built: profiles.BuiltAgent
+    mcp: mcp.Loaded = field(default_factory=mcp.Loaded)
+
+
+def _assemble(options: GlobalOptions, *, for_chat: bool = False) -> Session:
+    """按选项装配 agent。每会话一次 —— MCP 工具是构图期参数，改不了。"""
     cfg = _load_config(options)
     workspace = (
         paths.resolve_workspace(options.workspace)
@@ -119,18 +131,37 @@ def _assemble(options: GlobalOptions, *, for_chat: bool = False) -> profiles.Bui
         # C7 换成 SqliteSaver 就能跨进程恢复；现在先让一次会话内的多轮能记住上下文。
         checkpointer = InMemorySaver()
 
+    loaded = _load_mcp(cfg)
     with ui.status("装配 agent…"):
         built = profiles.build_agent(
             cfg,
             options.agent or "general",
             workspace=workspace,
             model=options.model,
+            extra_tools=tuple(loaded.tools),
             checkpointer=checkpointer,
         )
-    return built
+    for problem in loaded.problems:
+        ui.warn(f"MCP {problem}")
+    return Session(built=built, mcp=loaded)
 
 
-def _show_banner(built: profiles.BuiltAgent) -> None:
+def _load_mcp(cfg: Config) -> mcp.Loaded:
+    """连 MCP 服务、拿工具。
+
+    `asyncio.run` 在这儿安全：CLI 是同步的，没有正在跑的事件循环。
+    """
+    discovery = mcp.discover(cfg)
+    for problem in discovery.problems:
+        ui.warn(f"MCP 配置 {problem}")
+    if not discovery.servers:
+        return mcp.Loaded()
+    with ui.status(f"连 MCP（{len(discovery.servers)} 个服务）…"):
+        return asyncio.run(mcp.connect(discovery.servers, timeout=cfg.mcp.tool_timeout))
+
+
+def _show_banner(session: Session) -> None:
+    built = session.built
     count = len(skills.scan(built.skill_sources).skills)
     ui.banner(
         profile=built.profile.name,
@@ -138,6 +169,18 @@ def _show_banner(built: profiles.BuiltAgent) -> None:
         backend=backends.describe(built.backend_cfg, built.workspace),
         workspace=paths.display(built.workspace),
         skills=f"{count} 个（maa skills list 看详情）" if count else "无",
+        mcp=_mcp_summary(session.mcp),
+    )
+
+
+def _mcp_summary(loaded: mcp.Loaded) -> str:
+    ok = loaded.ok_servers
+    if not ok:
+        # 有问题的时候不写"无" —— 用户得知道是没配，还是配了但连不上。
+        return "连不上（maa mcp test 看详情）" if loaded.reports else "无"
+    return (
+        f"{len(loaded.tools)} 个工具 / {len(ok)} 个服务"
+        f"（{'、'.join(report.server.name for report in ok)}）"
     )
 
 
@@ -197,11 +240,11 @@ def run(
 ) -> None:
     """一次性执行：跑完就退出。"""
     options = _resolve(ctx, agent=agent, model=model, workspace=workspace)
-    built = _assemble(options)
-    _show_banner(built)
+    session = _assemble(options)
+    _show_banner(session)
 
     try:
-        final_text = _run_turn(built, prompt, thread_id="run")
+        final_text = _run_turn(session.built, prompt, thread_id="run")
     except KeyboardInterrupt:
         ui.newline()
         ui.warn("已中断")
@@ -224,8 +267,8 @@ def chat(
     from prompt_toolkit.history import InMemoryHistory
 
     options = _resolve(ctx, agent=agent, model=model, workspace=workspace)
-    built = _assemble(options, for_chat=True)
-    _show_banner(built)
+    session = _assemble(options, for_chat=True)
+    _show_banner(session)
     ui.info("输入 /help 看可用命令；Ctrl-D 退出。")
 
     session: PromptSession[str] = PromptSession(history=InMemoryHistory())
@@ -248,7 +291,7 @@ def chat(
             continue
 
         try:
-            _run_turn(built, text, thread_id=thread_id)
+            _run_turn(session.built, text, thread_id=thread_id)
         except KeyboardInterrupt:
             ui.newline()
             ui.warn("已中断，可以接着问")
@@ -357,6 +400,90 @@ def _one_line(text: str, limit: int = 60) -> str:
     """表格里放不下整段描述，掐到第一个句号。"""
     head = text.split("。")[0].strip()
     return head if len(head) <= limit else f"{head[: limit - 1]}…"
+
+
+@mcp_app.command("list")
+def mcp_list(ctx: typer.Context) -> None:
+    """列出配置里有哪些 MCP 服务。**不连网** —— 这一条随时能跑。"""
+    options = _resolve(ctx)
+    cfg = _load_config(options)
+    discovery = mcp.discover(cfg)
+
+    if discovery.files:
+        ui.info("读到的文件（后面的覆盖前面的）：")
+        for path in discovery.files:
+            ui.info(f"  {paths.display(path)}")
+    else:
+        # 文件不存在是正常状态，但得让人知道"我到底去哪儿找过"。
+        ui.info("一个配置文件都没读到。找过这些地方：")
+        for raw in cfg.mcp.config_files:
+            ui.info(f"  {paths.display(paths.resolve_path(raw))}")
+
+    if discovery.servers:
+        ui.table(
+            f"MCP 服务（{len(discovery.servers)} 个）",
+            ["服务", "连法", "来自"],
+            [
+                (server.name, server.describe(), paths.display(server.source))
+                for server in discovery.servers
+            ],
+        )
+    elif not discovery.problems:
+        ui.warn("配置文件里一个服务都没有 —— 照 .mcp.json.example 写一个")
+
+    for problem in discovery.problems:
+        ui.error(problem)
+
+    ui.info("这儿只说明条目写对了，能不能连上得跑 maa mcp test。")
+    if discovery.problems:
+        raise typer.Exit(code=1)
+
+
+@mcp_app.command("test")
+def mcp_test(
+    ctx: typer.Context,
+    server: str | None = typer.Argument(None, help="只测这一个；不给就全测"),
+) -> None:
+    """真的连一下，把每个服务能提供的工具列出来。"""
+    options = _resolve(ctx)
+    cfg = _load_config(options)
+    discovery = mcp.discover(cfg)
+
+    for problem in discovery.problems:
+        ui.error(f"配置 {problem}")
+    if discovery.problems:
+        raise typer.Exit(code=1)
+
+    servers = discovery.servers
+    if server:
+        servers = [item for item in servers if item.name == server]
+        if not servers:
+            names = "、".join(item.name for item in discovery.servers) or "（一个都没有）"
+            ui.error(f"没这个服务：{server}。配置里有的是 {names}")
+            raise typer.Exit(code=1)
+
+    if not servers:
+        ui.warn("没有可测的服务 —— 照 .mcp.json.example 写一个再试")
+        raise typer.Exit(code=1)
+
+    loaded = asyncio.run(mcp.connect(servers, timeout=cfg.mcp.tool_timeout))
+
+    rows: list[tuple[str, str, str]] = []
+    for report in loaded.reports:
+        if report.error:
+            rows.append((ui.BAD, report.server.name, report.error))
+        elif report.tools:
+            for tool in report.tools:
+                rows.append((ui.OK, report.server.name, tool.name))
+        else:
+            rows.append((ui.WARN, report.server.name, "连上了，但一个工具都没有"))
+    ui.table("maa mcp test", ["", "服务", "工具"], rows)
+
+    failed = [report for report in loaded.reports if report.error]
+    if failed:
+        ui.error(f"{len(failed)} 个服务没连上")
+        raise typer.Exit(code=1)
+    ui.ok(f"{len(loaded.tools)} 个工具，来自 {len(loaded.reports)} 个服务")
 
 
 @app.command()
