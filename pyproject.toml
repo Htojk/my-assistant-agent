@@ -59,6 +59,8 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# `.claude/harness/` 是外部工具的脚本，不属于本项目的源码，不跟项目一起定规矩。
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
