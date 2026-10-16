@@ -3,8 +3,8 @@
 > 本文件由 `.claude/harness/progress.py` 自动生成，**请勿手改**。
 > 改状态用：`status` / `next` / `start <id>` / `done <id>` / `block <id> --reason "…"`
 
-**进度：6/10**　`████████████░░░░░░░░`
-最后更新：2026-10-16T08:54:42Z
+**进度：7/10**　`██████████████░░░░░░`
+最后更新：2026-10-16T09:08:07Z
 
 | # | 提交 | 任务 | 状态 | commit |
 |---|---|---|---|---|
@@ -14,16 +14,16 @@
 | C4 | `feat(skills): 技能目录发现与内置技能` | 技能加载与三个内置技能 | ✅ done | `47391c9` |
 | C5 | `feat(mcp): MCP 配置读取、校验与动态加载` | MCP 可配置与动态加载 | ✅ done | `66c61ee` |
 | C6 | `feat(agent): writer / coder / planner 三种 profile 与子代理` | 三种能力 profile 与子代理 | ✅ done | `6012708` |
-| C7 | `feat(session): SqliteSaver 会话持久化与 --resume` | 会话持久化与恢复 | 🔨 in_progress | `—` |
-| C8 | `feat(approval): 危险工具的 HITL 审批循环` | HITL 审批循环 | · pending | `—` |
+| C7 | `feat(session): SqliteSaver 会话持久化与 --resume` | 会话持久化与恢复 | ✅ done | `2569b84` |
+| C8 | `feat(approval): 危险工具的 HITL 审批循环` | HITL 审批循环 | 🔨 in_progress | `—` |
 | C9 | `test: 单元、集成与冒烟测试补全` | 单元与冒烟测试补全 | · pending | `—` |
 | C10 | `docs: INDEX.md 逐篇技术对照与架构说明` | INDEX.md 逐篇技术对照 | · pending | `—` |
 
 ## 当前
 
-**C7 — 会话持久化与恢复**（in_progress）
+**C8 — HITL 审批循环**（in_progress）
 
-- 提交信息：feat(session): SqliteSaver 会话持久化与 --resume
-- 交付物：src/maa/session.py, src/maa/cli.py, tests/test_session.py
-- 验收：maa chat 结束后 maa chat --resume <id> 能接上上一轮上下文
-- 备注：SqliteSaver 落在 ~/.maa/sessions.db；interrupt_on 依赖 checkpointer。
+- 提交信息：feat(approval): 危险工具的 HITL 审批循环
+- 交付物：src/maa/approval.py, tests/test_approval.py
+- 验收：local 模式下 execute / write_file / edit_file / delete 触发人工确认；yolo 模式不触发
+- 备注：permissions= 管不住 execute 和沙箱后端，本地模式的安全边界只能是 interrupt_on。

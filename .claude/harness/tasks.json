@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T08:54:42Z",
+  "updated_at": "2026-10-16T09:08:07Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -107,7 +107,7 @@
     {
       "id": "C7",
       "title": "会话持久化与恢复",
-      "status": "in_progress",
+      "status": "done",
       "commit": "feat(session): SqliteSaver 会话持久化与 --resume",
       "deliverables": [
         "src/maa/session.py",
@@ -115,12 +115,13 @@
         "tests/test_session.py"
       ],
       "acceptance": "maa chat 结束后 maa chat --resume <id> 能接上上一轮上下文",
-      "notes": "SqliteSaver 落在 ~/.maa/sessions.db；interrupt_on 依赖 checkpointer。"
+      "notes": "会话落 ~/.maa/sessions.db，-r/--resume 跨进程接上下文；checkpointer 已铺好供 C8 的 interrupt_on 用。",
+      "sha": "2569b84"
     },
     {
       "id": "C8",
       "title": "HITL 审批循环",
-      "status": "pending",
+      "status": "in_progress",
       "commit": "feat(approval): 危险工具的 HITL 审批循环",
       "deliverables": [
         "src/maa/approval.py",
