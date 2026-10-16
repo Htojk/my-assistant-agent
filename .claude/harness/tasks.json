@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T08:20:05Z",
+  "updated_at": "2026-10-16T08:31:20Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -63,7 +63,7 @@
     {
       "id": "C4",
       "title": "技能加载与三个内置技能",
-      "status": "in_progress",
+      "status": "done",
       "commit": "feat(skills): 技能目录发现与内置技能",
       "deliverables": [
         "src/maa/skills.py",
@@ -73,12 +73,13 @@
         "tests/test_skills.py"
       ],
       "acceptance": "多源技能目录按优先级去重；agent 能用 read_file 读到 SKILL.md（无 load_skill 工具）",
-      "notes": "技能目录低→高优先级：~/.maa/skills → ~/.claude/skills → ~/.agents/skills → <project>/.maa/skills → <project>/.agents/skills → config.skills.extra_dirs"
+      "notes": "技能目录多源发现与优先级去重，三个内置技能，read_file 经 CompositeBackend 路由读到 SKILL.md",
+      "sha": "47391c9"
     },
     {
       "id": "C5",
       "title": "MCP 可配置与动态加载",
-      "status": "pending",
+      "status": "in_progress",
       "commit": "feat(mcp): MCP 配置读取、校验与动态加载",
       "deliverables": [
         "src/maa/mcp.py",
