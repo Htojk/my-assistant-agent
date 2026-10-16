@@ -140,3 +140,41 @@ def test_不认识的命令退出码非零(maa_home: Path) -> None:
     result = run_cli(["不存在的命令"], maa_home)
 
     assert result.returncode != 0
+
+
+def test_doctor_看得见审批名单里的错别字(maa_home: Path) -> None:
+    """名单里的名字写错了不会报错、只会静默不生效 —— 自检得替人看见它。
+
+    退出码要照常是 0：错别字是"你的门没装好"，不是"这台机器跑不起来"。
+    """
+    maa_home.mkdir(parents=True, exist_ok=True)
+    (maa_home / "config.toml").write_text(
+        "[models]\n"
+        'default = "openai:gpt-5.5"\n'
+        "\n"
+        "[models.providers.openai]\n"
+        'api_key_env = "OPENAI_API_KEY"\n'
+        "\n"
+        "[approval]\n"
+        'gated_tools = ["write_file", "excute"]\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli(["doctor"], maa_home, OPENAI_API_KEY="sk-x")
+
+    assert result.returncode == 0, "自检自己不该因为一行错别字就判死刑"
+    assert "审批名单" in result.stdout
+    assert "excute" in result.stdout
+
+
+def test_doctor_默认名单不报错(maa_home: Path) -> None:
+    """反向：默认配置在**每个** profile 下都得是干净的。
+
+    writer 故意没有 `execute`、planner 连 `delete` 都没有，而默认名单写着它们 ——
+    要是这行也报，那它就是条永远亮着的假警报。
+    """
+    for agent in ("general", "writer", "coder", "planner"):
+        result = run_cli(["--agent", agent, "doctor"], maa_home, OPENAI_API_KEY="sk-x")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "审批名单" not in result.stdout, f"{agent} 的默认名单被误报了"

@@ -23,12 +23,12 @@ readonly 模式下写操作本来就被 `permissions` 拒了，这里还会再�
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import ui
-from .config import ApprovalConfig
+from .config import DEFAULT_GATED_TOOLS, ApprovalConfig
 
 INTERRUPT_KEY = "__interrupt__"
 """中断在 `stream_mode="updates"` 里占的那一格。"""
@@ -64,6 +64,29 @@ def describe(cfg: ApprovalConfig) -> str:
     if not cfg.gated_tools:
         return "manual · 但要审批的工具是空的（等于不问）"
     return f"manual · 要审批：{'、'.join(cfg.gated_tools)}"
+
+
+def ineffective(cfg: ApprovalConfig, available: Iterable[str]) -> list[str]:
+    """名单里**配了却拦不住**、而且看着像打错的名字。
+
+    打错一个工具名不会报错 —— 中间件见了不认识的名字就跳过，于是"我以为 `exec` 被
+    拦住了"这种事可以一直没人知道。这个函数就是把它捞出来。
+
+    判据是**既不在这次的工具表里、也不在内置名单里**，第二个条件不能省：
+    writer 故意没有 `execute`、planner 连 `delete` 都没有，而默认名单照样写着它们。
+    只看"在不在工具表里"的话，每次跑 writer / planner 都会刷一行假警告 ——
+    狼喊多了，真有狼那行也没人看。
+
+    所以这里报的是"这个名字我们不认识"，不是"这个工具这次没有"。MCP 工具就在
+    `available` 里，给它们配审批不会误报；反过来服务没连上时会报一条 —— 那是真话。
+
+    `yolo` 直接给空表：那时候名单本来就不参与任何判断。
+    """
+    if cfg.mode != "manual":
+        return []
+    have = set(available)
+    known = set(DEFAULT_GATED_TOOLS)
+    return [name for name in cfg.gated_tools if name not in have and name not in known]
 
 
 def pending(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:

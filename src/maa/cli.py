@@ -172,7 +172,24 @@ def _assemble(options: GlobalOptions, *, store: session.Store | None = None) -> 
         )
     for problem in loaded.problems:
         ui.warn(f"MCP {problem}")
+    _warn_ineffective(cfg, built)
     return Session(built=built, mcp=loaded, approval_cfg=cfg.approval)
+
+
+def _warn_ineffective(cfg: Config, built: profiles.BuiltAgent) -> None:
+    """审批名单里认不出来的名字，启动时说一声。
+
+    不说的话它会一路静默：中间件见了不认识的工具名就跳过，用户以为拦住了，
+    直到某天真被执行了才发现那道门压根没装。查不到的失败最难查。
+    """
+    names = profiles.tool_names(built)
+    if not names:
+        # 翻不到工具表（换 SDK 版本可能翻空）—— 这时候报的每一条都可能是假的
+        return
+    if wrong := approval.ineffective(cfg.approval, names):
+        ui.warn(
+            f"审批名单里的 {'、'.join(wrong)} 不在这次的工具表里 —— 写了也拦不住（名字打错了？）"
+        )
 
 
 def _load_mcp(cfg: Config) -> mcp.Loaded:
@@ -745,6 +762,11 @@ def _check_environment(options: GlobalOptions, cfg: Config, record: Recorder) ->
         detail += f" · 工具 {len(names)} 个：{'、'.join(names)}"
     record("agent 装配", True, detail)
 
+    # 「审批开着」和「审批拦得住你想拦的东西」是两件事，第二件只有在知道工具表
+    # 之后才说得清。只有 yolo 或者名单里全是认识的名字时这行才不出现。
+    if names and (wrong := approval.ineffective(cfg.approval, names)):
+        record("审批名单", None, f"{'、'.join(wrong)} 不在工具表里，拦不住（名字打错了？）")
+
 
 def _check_sessions(record: Recorder) -> None:
     """会话库读不读得动。它在主目录里，权限出问题的机器上这里是第一个炸的。
@@ -766,13 +788,6 @@ def _check_sessions(record: Recorder) -> None:
 
 def _report(checks: list[tuple[str, str, str]]) -> bool:
     """打表，返回"是不是全绿"。"""
-    marks = {"ok": ui.OK, "warn": ui.WARN, "bad": ui.BAD}
-    ui.table(
-        "maa doctor",
-        ["检查", "", "结果"],
-        [(label, marks[state], detail) for label, state, detail in checks],
-    )
-    return all(state != "bad" for _label, state, _detail in checks)
     marks = {"ok": ui.OK, "warn": ui.WARN, "bad": ui.BAD}
     ui.table(
         "maa doctor",

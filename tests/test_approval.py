@@ -21,7 +21,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 
-from maa import approval, cli, profiles
+from maa import approval, cli, profiles, ui
 from maa.config import ApprovalConfig, Config
 
 GATED = ("write_file", "edit_file", "delete", "execute")
@@ -142,6 +142,78 @@ def test_banner_那行说清楚开没开() -> None:
     assert "execute" in described and "manual" in described
     # 表是空的时候别让人以为拦住了什么
     assert "等于不问" in approval.describe(ApprovalConfig(gated_tools=[]))
+
+
+# ------------------------------------------------------------------ 名单里的名字认不认识
+
+WRITER_TOOLS = ("edit_file", "glob", "grep", "ls", "read_file", "task", "write_file", "write_todos")
+PLANNER_TOOLS = ("glob", "grep", "ls", "read_file", "task", "write_file", "write_todos")
+"""实测各 profile 的工具表（`maa doctor` 里那串）。默认名单**不是**人人都有这些工具，
+这正是这一节存在的原因。"""
+
+
+def test_默认名单不算打错() -> None:
+    """writer 没有 `execute`、planner 连 `delete` 都没有，而默认名单照样写着它们。
+
+    按"在不在工具表里"报警的话，这两个 profile 每次启动都会刷一行假警告 ——
+    喊多了，真有狼那行也没人看。
+    """
+    assert approval.ineffective(ApprovalConfig(), WRITER_TOOLS) == []
+    assert approval.ineffective(ApprovalConfig(), PLANNER_TOOLS) == []
+
+
+def test_打错的名字要报出来() -> None:
+    """`exec` 少写三个字母，中间件就当没这条 —— 门看着装上了，其实一直是开的。"""
+    cfg = ApprovalConfig(gated_tools=["write_file", "exec"])
+
+    assert approval.ineffective(cfg, ("write_file", "execute")) == ["exec"]
+
+
+def test_表上有的工具不报() -> None:
+    assert approval.ineffective(ApprovalConfig(gated_tools=["execute"]), ("execute", "ls")) == []
+
+
+def test_MCP_工具配审批不算打错() -> None:
+    """MCP 工具就在工具表里（名字带服务前缀），给它配审批是这个功能的正当用法。"""
+    cfg = ApprovalConfig(gated_tools=["demo_echo"])
+
+    assert approval.ineffective(cfg, ("demo_echo", "read_file")) == []
+    # 服务这次没连上就照实说：现在写的这条拦不住任何东西
+    assert approval.ineffective(cfg, ("read_file",)) == ["demo_echo"]
+
+
+def test_yolo_下名单不参与判断() -> None:
+    """yolo 是连中间件都不挂 —— 这时候说"你的名单里有不认识的名字"是废话一句。"""
+    assert (
+        approval.ineffective(ApprovalConfig(mode="yolo", gated_tools=["exec"]), ("read_file",))
+        == []
+    )
+
+
+def test_启动时把错别字说一声() -> None:
+    """自检里看得见是一回事，真跑起来也得说 —— 大多数人不会主动去跑 `doctor`。"""
+    cfg = Config(approval=ApprovalConfig(gated_tools=["write_file", "excute"]))
+    built = profiles.build_agent(cfg, "writer", model=Scripted())
+
+    Scripted.seen = []
+    with ui.err_console.capture() as captured:
+        cli._warn_ineffective(cfg, built)
+
+    said = captured.get()
+    assert "excute" in said, "名单里的名字打错了要出声，不然它永远静默不生效"
+    assert "write_file" not in said, "认识的名字别跟着报，报多了这行就没人看了"
+
+
+def test_工具表翻不到就闭嘴() -> None:
+    """`tool_names()` 翻的是 SDK 内部结构，换版本可能翻空 —— 那时候报的每条都可能是假的。"""
+
+    class Nothing:
+        graph = None
+
+    with ui.err_console.capture() as captured:
+        cli._warn_ineffective(Config(approval=ApprovalConfig(gated_tools=["exec"])), Nothing())
+
+    assert captured.get() == ""
 
 
 def test_从_stream_里捞出待审批的请求() -> None:

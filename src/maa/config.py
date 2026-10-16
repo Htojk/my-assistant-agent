@@ -80,6 +80,15 @@ class BackendConfig(BaseModel):
     """`execute` 的单条命令超时（秒）。"""
 
 
+DEFAULT_GATED_TOOLS: tuple[str, ...] = ("write_file", "edit_file", "delete", "execute")
+"""内置的审批名单。
+
+是常量不只是为了少写一遍：`approval.ineffective()` 拿它区分**"名字打错了"**和
+**"这个 profile 本来就没这个工具"** —— 后者是默认配置的常态（writer 没有
+`execute`、planner 连 `delete` 都没有），不该报警。
+"""
+
+
 class ApprovalConfig(BaseModel):
     """审批策略：哪些工具执行前要先问人。
 
@@ -89,9 +98,7 @@ class ApprovalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["manual", "yolo"] = "manual"
-    gated_tools: list[str] = Field(
-        default_factory=lambda: ["write_file", "edit_file", "delete", "execute"]
-    )
+    gated_tools: list[str] = Field(default_factory=lambda: list(DEFAULT_GATED_TOOLS))
 
 
 class McpConfig(BaseModel):
