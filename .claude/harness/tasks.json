@@ -1,7 +1,7 @@
 {
   "project": "my-assistant-agent",
   "source_of_truth": "docs/PLAN.md",
-  "updated_at": "2026-10-16T08:43:05Z",
+  "updated_at": "2026-10-16T08:54:42Z",
   "rules": [
     "tasks.json 是任务状态的唯一事实来源，只能通过 .claude/harness/progress.py 修改。",
     "每个任务对应一次 git 提交，单次改动不超过 1000 行。",
@@ -93,7 +93,7 @@
     {
       "id": "C6",
       "title": "三种能力 profile 与子代理",
-      "status": "in_progress",
+      "status": "done",
       "commit": "feat(agent): writer / coder / planner 三种 profile 与子代理",
       "deliverables": [
         "src/maa/subagents.py",
@@ -101,12 +101,13 @@
         "tests/test_profiles.py"
       ],
       "acceptance": "四种 profile 都能建出 agent；planner 的工具表里确实存在 write_todos；writer 的工具表里没有 execute",
-      "notes": "read_file 必须始终留在工具白名单里，否则 FilesystemMiddleware 抛 ValueError。用 tools=[...] 而非 permissions= 做裁剪。"
+      "notes": "四个 profile 靠提示+工具白名单+子代理区分,白名单走同名替换",
+      "sha": "6012708"
     },
     {
       "id": "C7",
       "title": "会话持久化与恢复",
-      "status": "pending",
+      "status": "in_progress",
       "commit": "feat(session): SqliteSaver 会话持久化与 --resume",
       "deliverables": [
         "src/maa/session.py",
