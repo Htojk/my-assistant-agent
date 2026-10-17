@@ -66,6 +66,42 @@ def test_审批面板把每个参数都摆出来() -> None:
     assert "这次会话已经批过" in shown
 
 
+@pytest.mark.parametrize("brackets", ["[a-z]+", "[stderr]", "[mcp]", "[models]"])
+def test_每个出口都不解析方括号(brackets: str) -> None:
+    """`raw` / `stream_delta` 之外，`info` / `warn` / `ok` / `error` / 表格 / banner
+    也一样不能解析 —— 内容里有方括号的场合多得很（正则、TOML 段名、工具过滤的
+    `[mcp]` 前缀、报错原文里的 `[Errno 2]`）。
+
+    这条是**真跑出来的**：`[mcp] 过滤掉了 2 个工具` 印出来成了" 过滤掉了 2 个工具"，
+    `include = [demo_*]` 整段消失 —— rich 把方括号里的东西当标签吃了，不报错、
+    不提示。凡是"内容被静默吃掉"的 bug，都得有一条参数化测试守着。
+    """
+    assert brackets in _captured_err(ui.info, f"前 {brackets} 后")
+    assert brackets in _captured_err(ui.warn, f"前 {brackets} 后")
+    assert brackets in _captured_err(ui.error, f"前 {brackets} 后")
+    assert brackets in _captured(ui.ok, f"前 {brackets} 后")
+    assert brackets in _captured(ui.hint, f"前 {brackets} 后")
+
+    shown = _captured(ui.table, "表", ["一", "二"], [["a", f"前 {brackets} 后"]])
+    assert brackets in shown
+
+    banner = _captured(
+        ui.banner, profile="general", model="m", backend="b", workspace="w", mcp=f"前 {brackets} 后"
+    )
+    assert brackets in banner
+
+
+def test_表格里还认得出状态记号() -> None:
+    """单元格改按内容处理后，`OK` / `WARN` / `BAD` 不能跟着一起变成 `[green]✓[/green]`。
+
+    它们是 `Text`，走的是另一条路。这条钉住"记号还是记号"。
+    """
+    shown = _captured(ui.table, "表", ["", "服务"], [[ui.OK, "demo"], [ui.BAD, "broken"]])
+
+    assert "✓" in shown and "✗" in shown
+    assert "green" not in shown and "[green]" not in shown
+
+
 def test_诊断走_stderr_提示走_stdout() -> None:
     """这个分家是有意的：`info` 是诊断，重定向时不该混进结果；`hint` 讲的是这次交互的
     **产出**（比如会话 id），用户很可能正是靠重定向把它抄下来。"""
