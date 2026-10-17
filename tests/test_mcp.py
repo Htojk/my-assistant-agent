@@ -17,6 +17,7 @@ from fastmcp.client.transports import FastMCPTransport
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import StructuredTool
 
 from maa import mcp, profiles
 from maa.config import Config, McpConfig
@@ -289,6 +290,171 @@ async def test_一个服务连不上不影响另一个(memory: dict[str, FastMCP
 
 async def test_没有服务就不连() -> None:
     assert (await mcp.connect([])).reports == []
+
+
+# --------------------------------------------------------------------------- 工具过滤
+
+
+def test_不配过滤就都留() -> None:
+    assert mcp.keeps("demo_echo")
+    assert mcp.keeps("demo_echo", include=[], exclude=[])
+
+
+def test_include_是白名单() -> None:
+    """`include` 非空 = 只留匹配的。空着跟"写了 `*`"是两回事：前者是"没配"。"""
+    assert mcp.keeps("demo_echo", include=["demo_*"])
+    assert not mcp.keeps("other_echo", include=["demo_*"])
+    assert mcp.keeps("other_echo", include=["*"])
+
+
+def test_exclude_赢() -> None:
+    """两边都命中时按去掉算。
+
+    这条不是随手定的：反过来（include 赢）的话，往配置里加一条 include 就会
+    悄悄把某条 exclude 顶掉 —— 配置越写越松，而且是静悄悄地松。
+    """
+    assert not mcp.keeps("demo_delete", include=["demo_*"], exclude=["*_delete"])
+
+
+def test_匹配的是带前缀的全名() -> None:
+    """`demo_echo` 才是模型看见的名字，也是 `gated_tools` 里要写的名字。
+
+    两边写同一种名字，比"这里全名那里短名"少一整类错。
+    """
+    assert mcp.keeps("demo_echo", include=["demo_echo"])
+    assert not mcp.keeps("demo_echo", include=["echo"])
+
+
+def test_模式是整串匹配不是子串() -> None:
+    """`fnmatch` 认的是整串。所以 `exclude = ["echo"]` 筛不掉 `demo_echo`。
+
+    这条得钉住，因为它违反直觉：人想的是"去掉 echo 这个工具"，写下来是
+    `echo`，实际什么也没去掉，而且**不报错**。要按后缀筛得写 `*_echo`。
+    （不做子串匹配是故意的：子串一开，`read` 就会连 `thread_read_all` 一起带走，
+    那种"顺手多删几个"比多写一个 `*` 难查得多。）
+    """
+    assert mcp.keeps("demo_echo", exclude=["echo"])
+    assert not mcp.keeps("demo_echo", exclude=["*_echo"])
+
+
+def test_大小写敏感() -> None:
+    """工具名是标识符不是文件名 —— Windows 上 `fnmatch` 那套大小写折叠不能带进来，
+    否则同一份配置在 Windows 和 Linux 上筛出两张不同的表。"""
+    assert mcp.keeps("demo_Echo", include=["demo_echo"]) is False
+
+
+async def test_过滤在连接时生效(memory: dict[str, FastMCP]) -> None:
+    """连接这一层就把过滤做完：`Loaded.tools` 永远是"agent 拿到的东西"。"""
+    memory["demo"] = _server("demo", "echo", "delete", "add")
+
+    loaded = await mcp.connect(_servers("demo"), timeout=30, exclude=["demo_delete"])
+
+    assert [tool.name for tool in loaded.tools] == ["demo_echo", "demo_add"]
+    assert loaded.dropped == ["demo_delete"]
+    # 报告里留的是**原始**工具表 —— `maa mcp test` 靠它回答"为什么我的工具没进来"
+    assert [tool.name for tool in loaded.reports[0].tools] == [
+        "demo_echo",
+        "demo_delete",
+        "demo_add",
+    ]
+
+
+async def test_过滤不参与重名判断(memory: dict[str, FastMCP]) -> None:
+    """被筛掉的那个不该再因为重名去污染 report.error。
+
+    服务名只差一个非法字符时两个前缀会被规范化成同一个（`a.b` 和 `a b` 都是
+    `a_b`），而"已经被过滤掉的工具报了重名"是条假警告。
+    """
+    memory["a.b"] = _server("a.b", "echo", "keep")
+    memory["a b"] = _server("a b", "echo")
+
+    loaded = await mcp.connect(_servers("a.b", "a b"), timeout=30, exclude=["a_b_echo"])
+
+    assert [tool.name for tool in loaded.tools] == ["a_b_keep"]
+    assert loaded.dropped == ["a_b_echo", "a_b_echo"]
+    assert loaded.problems == []
+
+
+def test_配置里的过滤字段() -> None:
+    cfg = Config.model_validate({"mcp": {"include": ["demo_*"], "exclude": ["*_delete"]}})
+
+    assert cfg.mcp.include == ["demo_*"]
+    assert cfg.mcp.exclude == ["*_delete"]
+    assert cfg.mcp.filtering is True
+    assert Config().mcp.filtering is False, "没配过滤的时候不该到处提这两个字"
+
+
+# --------------------------------------------------------------------------- 同步入口
+
+
+def _text(result: Any) -> str:
+    """工具返回的是内容块列表（`response_format="content_and_artifact"`），
+    这里只关心正文那一段。"""
+    return "".join(block["text"] for block in result if block.get("type") == "text")
+
+
+def test_接上同步入口就能同步调(memory: dict[str, FastMCP]) -> None:
+    """MCP 工具**只有异步实现**：不接这一手，`maa run` 里模型一调就是
+    `NotImplementedError: StructuredTool does not support sync invocation`。
+
+    这条是真跑出来的 —— 过滤做完拿真模型跑 `maa run`，工具调不动才发现。
+    光验"工具绑上了"是不够的，绑上了不等于调得动。
+    """
+    memory["demo"] = _server("demo", "echo")
+
+    loaded = mcp.connect_blocking(_servers("demo"), timeout=30)
+
+    assert _text(loaded.tools[0].invoke({"text": "hi"})) == "echo:hi"
+
+
+def test_每个工具接的是自己的协程(memory: dict[str, FastMCP]) -> None:
+    """接同步入口时是一轮一轮闭包出去的，闭包抓错变量的话所有工具都会跑去调
+    最后那一个 —— 而且照样有返回值，看不出错。所以两个一起验。"""
+    memory["demo"] = _server("demo", "echo", "add")
+
+    loaded = mcp.connect_blocking(_servers("demo"), timeout=30)
+
+    assert [tool.name for tool in loaded.tools] == ["demo_echo", "demo_add"]
+    assert _text(loaded.tools[0].invoke({"text": "hi"})) == "echo:hi"
+    assert _text(loaded.tools[1].invoke({"text": "hi"})) == "add:hi"
+
+
+def test_服务报的错还是一样地兜住(memory: dict[str, FastMCP]) -> None:
+    """服务返回 `isError` 时，`handle_tool_error` 把它变成一条给模型看的失败内容，
+    而不是把整轮打断。这一环挂在原工具对象上，接同步入口时最容易丢 —— 丢了的话
+    一个工具报错就能把整场对话打断。"""
+    server = FastMCP("demo")
+
+    @server.tool(name="boom")
+    def boom(text: str) -> str:
+        """总是失败。"""
+        raise ValueError("这个工具炸了")
+
+    memory["demo"] = server
+    loaded = mcp.connect_blocking(_servers("demo"), timeout=30)
+
+    assert "这个工具炸了" in _text(loaded.tools[0].invoke({"text": "hi"}))
+
+
+def test_没服务就不起循环(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`mcp test` 在一个服务都没配的时候走这条路 —— 不该为它起一条线程。
+
+    换一条新的循环来验：`_LOOP` 是进程级的，别的测试早就把它起起来了。
+    """
+    fresh = mcp.Loop()
+    monkeypatch.setattr(mcp, "_LOOP", fresh)
+
+    assert mcp.connect_blocking([]).tools == []
+    assert fresh._loop is None
+
+
+def test_本来就同步的工具原样留着() -> None:
+    """`bind` 只补异步工具那一手。以后往 `extra_tools` 里塞现成的同步工具时，
+    它不该被顺手改坏（`model_copy` 出来的是另一个对象，`==` 是值比较）。"""
+    tool = StructuredTool.from_function(lambda text: text, name="plain", description="原样返回。")
+
+    assert mcp.bind([tool]) == [tool]
+    assert mcp.bind([tool])[0].func is tool.func
 
 
 class _FakeModel(BaseChatModel):

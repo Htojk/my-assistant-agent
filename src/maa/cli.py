@@ -6,9 +6,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -180,15 +179,14 @@ def _warn_ineffective(cfg: Config, built: profiles.BuiltAgent) -> None:
         # 翻不到工具表（换 SDK 版本可能翻空）—— 这时候报的每一条都可能是假的
         return
     if wrong := approval.ineffective(cfg.approval, names):
-        ui.warn(
-            f"审批名单里的 {'、'.join(wrong)} 不在这次的工具表里 —— 写了也拦不住（名字打错了？）"
-        )
+        ui.warn(f"审批名单里的 {approval.why(wrong, filtered=cfg.mcp.filtering)}")
 
 
 def _load_mcp(cfg: Config) -> mcp.Loaded:
-    """连 MCP 服务、拿工具。
+    """连 MCP 服务、拿工具、按 `[mcp] include/exclude` 筛一遍。
 
-    `asyncio.run` 在这儿安全：CLI 是同步的，没有正在跑的事件循环。
+    走 `connect_blocking`：MCP 工具是异步的，得在 MCP 自己那条循环里连、在那儿调
+    （见 `mcp.Loop`）。这里同步等它 —— CLI 从头到尾是同步的。
     """
     discovery = mcp.discover(cfg)
     for problem in discovery.problems:
@@ -196,7 +194,30 @@ def _load_mcp(cfg: Config) -> mcp.Loaded:
     if not discovery.servers:
         return mcp.Loaded()
     with ui.status(f"连 MCP（{len(discovery.servers)} 个服务）…"):
-        return asyncio.run(mcp.connect(discovery.servers, timeout=cfg.mcp.tool_timeout))
+        loaded = mcp.connect_blocking(
+            discovery.servers,
+            timeout=cfg.mcp.tool_timeout,
+            include=cfg.mcp.include,
+            exclude=cfg.mcp.exclude,
+        )
+    _warn_filtered(loaded)
+    return loaded
+
+
+def _warn_filtered(loaded: mcp.Loaded, *, limit: int = 8) -> None:
+    """过滤掉的东西要说出来。
+
+    静默过滤是这功能最坏的形态：人配了 `include = ["demo_*"]` 打错一个字，
+    得到的是一个"什么都干不了但看着正常"的 agent，而且没有任何一行字提示
+    原因 —— 跟审批名单里那个错别字是同一类错，处理方式也该一样（说出来）。
+    """
+    if not loaded.dropped:
+        return
+    shown = "、".join(loaded.dropped[:limit])
+    if len(loaded.dropped) > limit:
+        # 数量写在最前面了，尾巴上只说"截断了" —— 两头都写数字会读成"这些再加 N 个"
+        shown += f"……（只列前 {limit} 个）"
+    ui.warn(f"[mcp] 过滤掉了 {len(loaded.dropped)} 个工具：{shown}；maa mcp test 看全表")
 
 
 def _show_banner(assembled: Session) -> None:
@@ -223,10 +244,14 @@ def _mcp_summary(loaded: mcp.Loaded) -> str:
     if not ok:
         # 有问题的时候不写"无" —— 用户得知道是没配，还是配了但连不上。
         return "连不上（maa mcp test 看详情）" if loaded.reports else "无"
-    return (
+    summary = (
         f"{len(loaded.tools)} 个工具 / {len(ok)} 个服务"
         f"（{'、'.join(report.server.name for report in ok)}）"
     )
+    # 过滤掉多少也要留在 banner 上 —— 这一行是人每次都会扫一眼的地方。
+    if loaded.dropped:
+        summary += f"，[mcp] 过滤掉 {len(loaded.dropped)} 个"
+    return summary
 
 
 def _run_turn(
@@ -603,6 +628,15 @@ def _one_line(text: str, limit: int = 60) -> str:
     return head if len(head) <= limit else f"{head[: limit - 1]}…"
 
 
+def _patterns(items: Sequence[str]) -> str:
+    """把模式列表按 TOML 里的样子印出来（`[a, b]`）。
+
+    直接 f-string 一个 list 出来的是 Python 的 repr —— `['a', 'b']`，带引号。
+    这一行是印给人照着改 config.toml 的，那就该长成 config.toml 里的样子。
+    """
+    return "[" + ", ".join(items) + "]"
+
+
 @mcp_app.command("list")
 def mcp_list(ctx: typer.Context) -> None:
     """列出配置里有哪些 MCP 服务。**不连网** —— 这一条随时能跑。"""
@@ -631,6 +665,15 @@ def mcp_list(ctx: typer.Context) -> None:
         )
     elif not discovery.problems:
         ui.warn("配置文件里一个服务都没有 —— 照 .mcp.json.example 写一个")
+
+    if cfg.mcp.filtering:
+        # 配了过滤就得在这儿说一句：否则"服务明明在、工具却没进来"的时候，
+        # 人只会去翻 .mcp.json，翻不出所以然。
+        ui.info(
+            f"工具过滤：[mcp] include = {_patterns(cfg.mcp.include)}"
+            f" · exclude = {_patterns(cfg.mcp.exclude)}"
+            "（匹配的是「服务_工具」全名，exclude 赢）"
+        )
 
     for problem in discovery.problems:
         ui.error(problem)
@@ -667,15 +710,26 @@ def mcp_test(
         ui.warn("没有可测的服务 —— 照 .mcp.json.example 写一个再试")
         raise typer.Exit(code=1)
 
-    loaded = asyncio.run(mcp.connect(servers, timeout=cfg.mcp.tool_timeout))
+    loaded = mcp.connect_blocking(
+        servers,
+        timeout=cfg.mcp.tool_timeout,
+        include=cfg.mcp.include,
+        exclude=cfg.mcp.exclude,
+    )
 
+    # 这张表列的是**各服务原始的工具**（`report.tools`），不是过滤之后的 ——
+    # 这个命令是拿来回答"为什么我的工具没进来"的，把被过滤的藏起来正好答不上。
+    dropped = set(loaded.dropped)
     rows: list[tuple[str, str, str]] = []
     for report in loaded.reports:
         if report.error:
             rows.append((ui.BAD, report.server.name, report.error))
         elif report.tools:
             for tool in report.tools:
-                rows.append((ui.OK, report.server.name, tool.name))
+                if tool.name in dropped:
+                    rows.append((ui.WARN, report.server.name, f"{tool.name}（被 [mcp] 过滤掉）"))
+                else:
+                    rows.append((ui.OK, report.server.name, tool.name))
         else:
             rows.append((ui.WARN, report.server.name, "连上了，但一个工具都没有"))
     ui.table("maa mcp test", ["", "服务", "工具"], rows)
@@ -684,7 +738,10 @@ def mcp_test(
     if failed:
         ui.error(f"{len(failed)} 个服务没连上")
         raise typer.Exit(code=1)
-    ui.ok(f"{len(loaded.tools)} 个工具，来自 {len(loaded.reports)} 个服务")
+    summary = f"{len(loaded.tools)} 个工具，来自 {len(loaded.reports)} 个服务"
+    if loaded.dropped:
+        summary += f"（另有 {len(loaded.dropped)} 个被 [mcp] 过滤掉，上面标了）"
+    ui.ok(summary)
 
 
 @app.command()

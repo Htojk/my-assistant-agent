@@ -16,6 +16,17 @@
 2. **工具名一律加 `{服务名}_` 前缀。** 两个服务各有一个 `search` 是完全正常的，
    不前缀的话 `create_deep_agent` 拿到一堆重名工具，谁留下全看绑定顺序。
 
+工具过滤（`[mcp] include / exclude`，`config.McpConfig`）也在这里做，`keeps()` 是判据：
+匹配**加了前缀之后**的全名，`*` 通配，**排除赢**。两条理由 —— 一是这一层是工具表的
+唯一出口，过滤放在调用方，`Loaded.tools` 就不再等于"agent 拿到的东西"；二是过滤
+**必须是能被看见的**：静默筛掉一批工具，得到的是一个"什么都干不了但看着正常"的
+agent，这跟审批名单里那个静默失效的错别字是同一类错，所以 `Loaded.dropped` 记着
+筛掉了谁，`cli` 负责说出来。
+
+第三个踩出来的坑是**同步/异步**：`langchain.mcp` 造出来的工具只有异步实现，而
+`fastmcp.Client` 绑在"建它那个循环"上。CLI 是同步的，于是这些工具到手也调不动 ——
+`Loop` 和 `bind()` 就是为这个存在的，`connect_blocking()` 是给同步调用方的入口。
+
 `langchain.mcp` 是 beta，导入它会抛一次 `LangChainBetaWarning`，且 API 可能漂。
 所以这个模块是它唯一的调用点，真变了只动这一个文件。
 """
@@ -23,10 +34,12 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import os
 import re
-from collections.abc import Iterable, Mapping, Sequence
+import threading
+from collections.abc import Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -105,6 +118,8 @@ class Loaded:
 
     tools: list[Any] = field(default_factory=list)
     reports: list[ServerReport] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+    """被 `[mcp] include / exclude` 筛掉的名字。留着是为了**能说出来** —— 见 `keeps()`。"""
 
     @property
     def problems(self) -> list[str]:
@@ -335,11 +350,22 @@ def target_for(server: McpServer) -> Any:
     return StreamableHttpTransport(spec["url"], headers=expanded)
 
 
-async def connect(servers: Sequence[McpServer], *, timeout: int = 120) -> Loaded:
+async def connect(
+    servers: Sequence[McpServer],
+    *,
+    timeout: int = 120,
+    include: Sequence[str] = (),
+    exclude: Sequence[str] = (),
+) -> Loaded:
     """连上每个服务，发现工具。**一个服务挂了不影响其他服务。**
 
     并行连：串行的话，一个不可达的服务会把整个装配卡满一个超时，用户眼看着光标
     转圈却不知道是在等谁。（网络故障是常态，不是异常情况。）
+
+    `include` / `exclude` 是工具过滤（`config.McpConfig` 那两个字段），在这一层做
+    是因为**这里是工具表的唯一出口**：过滤放在调用方，`Loaded.tools` 就不再是
+    "agent 拿到的东西"，而 `report.tools` 仍是各服务**原始**的工具列表 —— 过滤掉的
+    服务在 `maa mcp test` 里照样看得见，只是标了出来。
     """
     loaded = Loaded()
     if not servers:
@@ -356,6 +382,9 @@ async def connect(servers: Sequence[McpServer], *, timeout: int = 120) -> Loaded
             report = outcome
         loaded.reports.append(report)
         for tool in report.tools:
+            if not keeps(tool.name, include=include, exclude=exclude):
+                loaded.dropped.append(tool.name)
+                continue
             if tool.name in seen:
                 # 理论上不会重名（前缀带了服务名），但服务名可以只差一个非法
                 # 字符 —— 那种情况下两个前缀会被规范化成同一个。
@@ -366,6 +395,121 @@ async def connect(servers: Sequence[McpServer], *, timeout: int = 120) -> Loaded
             seen[tool.name] = server.name
             loaded.tools.append(tool)
     return loaded
+
+
+def connect_blocking(
+    servers: Sequence[McpServer],
+    *,
+    timeout: int = 120,
+    include: Sequence[str] = (),
+    exclude: Sequence[str] = (),
+) -> Loaded:
+    """同步入口：在 MCP 自己的循环里 `connect`，再把工具接上同步调用。
+
+    给同步调用方（CLI）用的；要协程就直接用 `connect()`。连接得在 `_LOOP` 里做，
+    因为 `fastmcp.Client` 是那一刻建出来的、从此认死那条循环。
+    """
+    if not servers:
+        # 没服务就别起线程 —— `mcp test` 在一个服务都没配的时候走这条路。
+        return Loaded()
+    loaded = _LOOP.run(connect(servers, timeout=timeout, include=include, exclude=exclude))
+    loaded.tools = bind(loaded.tools)
+    return loaded
+
+
+class Loop:
+    """MCP 专用的事件循环，跑在自己的线程上 —— 工具调得动的**前提**，不是包壳。
+
+    `langchain.mcp` 造出来的工具只有异步实现（`StructuredTool(coroutine=...)`），
+    同步调用直接 `NotImplementedError: StructuredTool does not support sync
+    invocation`；而 `fastmcp.Client` 绑在"建它那个循环"上 —— `asyncio.run` 连完
+    一返回循环就关了，再起一条循环去调是 `Client failed to connect: Event loop is
+    closed`。两条**实测都撞过**，所以循环得从连上那一刻活到最后一轮对话结束。
+
+    另一条路是把整个 CLI 改成异步（`graph.astream`）。没走，因为代价全落在跟 MCP
+    无关的地方：`session.Store` 的 checkpointer 和索引表**共用一条 sqlite 连接**
+    是刻意的（同一个线程里一前一后写，撞不上写锁），而 `AsyncSqliteSaver` 要的是
+    aiosqlite 的另一条连接；`chat` 的 REPL、`sessions list`、`doctor` 也得跟着传染
+    成异步。为一个工具来源把整个 CLI 翻过来不划算 —— 这里多一个线程，换来的是
+    别处一行都不用动。
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+
+    def _ensure(self) -> asyncio.AbstractEventLoop:
+        if self._loop is None or self._loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._loop.run_forever, name="maa-mcp", daemon=True
+            )
+            self._thread.start()
+        return self._loop
+
+    def run(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        """在循环里跑一个协程，等它的结果。
+
+        走 `run_coroutine_threadsafe` 而不是自己造 task：它会把**调用点的
+        contextvars 一起带过去**。这不是顺手的好处 —— langgraph 的 `interrupt()`
+        正是从 contextvars 里读 config 的，MCP 的 elicitation（服务反问一句、
+        由人来答）就靠它传回图里。
+        """
+        return asyncio.run_coroutine_threadsafe(coro, self._ensure()).result()
+
+
+_LOOP = Loop()
+"""进程级的那一条。工具绑的就是它，所以全进程只能有一个。"""
+
+
+def bind(tools: Sequence[Any]) -> list[Any]:
+    """给 MCP 工具接上同步入口 —— 接上才调得动（原因见 `Loop`）。
+
+    做法是**给现成的工具补一个 `func`**，不是照着参数重建一个：`args_schema`
+    （参数校验）、`handle_tool_error`（服务自己报的 `isError` 要变成一条失败的
+    工具消息给模型看，不能把整轮打断）、`response_format`（`content_and_artifact`
+    要拆成正文和附件两半）全挂在原对象上，重建一个就全丢了。
+
+    `func` 里转手调的是**原对象的 `coroutine`**，所以上面那三样走的还是同一条路，
+    同步和异步两个入口的行为是一样的。
+    """
+    bound: list[Any] = []
+    for tool in tools:
+        coroutine = getattr(tool, "coroutine", None)
+        if coroutine is None:
+            # 本来就是同步工具，原样留着。
+            bound.append(tool)
+            continue
+        bound.append(tool.model_copy(update={"func": _relay(coroutine)}))
+    return bound
+
+
+def _relay(coroutine: Any) -> Any:
+    """把协程转成同步函数。单开一个函数是为了让 `coroutine` 是**参数** ——
+    在循环里直接写闭包的话，闭包抓的是那个会被下一轮改掉的变量。"""
+
+    def call(*args: Any, **kwargs: Any) -> Any:
+        return _LOOP.run(coroutine(*args, **kwargs))
+
+    return call
+
+
+def keeps(name: str, *, include: Sequence[str] = (), exclude: Sequence[str] = ()) -> bool:
+    """这个名字该不该留在工具表里。
+
+    匹配的是**加了前缀之后**的全名（`demo_echo`）—— 那才是模型看见的名字，
+    也是 `gated_tools` 里要写的名字。两边写同一个名字，比"这里写全名那里写短名"
+    少一类错。`*` 通配，大小写敏感（`fnmatchcase`：工具名是标识符，不是文件名）。
+
+    **排除赢。** 同时命中两边时按去掉算 —— 于是 `include = ["*"]` 配
+    `exclude = ["*_delete"]` 能表达"全要，除了删除"。反过来的话，加一条
+    include 会悄悄把某条 exclude 顶掉，那就成了"越写越松"。
+    """
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in exclude):
+        return False
+    if not include:
+        return True
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in include)
 
 
 async def _one(server: McpServer, timeout: int) -> ServerReport:

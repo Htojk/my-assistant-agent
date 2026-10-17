@@ -216,6 +216,34 @@ def test_工具表翻不到就闭嘴() -> None:
     assert captured.get() == ""
 
 
+def test_配了工具过滤就多说一种可能() -> None:
+    """名字认不出来有**两个**可能的原因：打错了，或者被 `[mcp] include/exclude` 筛掉了。
+
+    只说"名字打错了"会让人去翻一个自己根本没打错的名字 —— 加了过滤就得把第二种
+    可能也说出来。没配过滤时不带这一句：每次启动都提一个用不上的功能，那行就没人看了。
+    """
+    assert (
+        approval.why(["demo_echo"])
+        == "demo_echo 不在这次的工具表里 —— 写了也拦不住（名字打错了？）"
+    )
+    assert "被 [mcp] include/exclude 过滤掉了" in approval.why(["demo_echo"], filtered=True)
+
+
+def test_自检和启动说的是同一句话() -> None:
+    """同一句话在 `cli`（启动时）和 `checks`（自检）两处都要说 —— 分头写就会漂，
+    而"自检说 A、启动说 B"比两处都不说更难查。所以那句话只该有一处出处。"""
+    cfg = Config(approval=ApprovalConfig(gated_tools=["write_file", "excute"]))
+    built = profiles.build_agent(cfg, "writer", model=Scripted())
+
+    Scripted.seen = []
+    with ui.err_console.capture() as captured:
+        cli._warn_ineffective(cfg, built)
+
+    said = " ".join(captured.get().split())
+    # 挑的是 `why()` 独有的半句（"名字打错了？"那句两个调用方都可能自己写一份）
+    assert "excute 不在这次的工具表里" in said
+
+
 def test_从_stream_里捞出待审批的请求() -> None:
     request = _request("execute")
 

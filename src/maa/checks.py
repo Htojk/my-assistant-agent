@@ -104,7 +104,7 @@ def _check_environment(
     # 「审批开着」和「审批拦得住你想拦的东西」是两件事，第二件只有在知道工具表
     # 之后才说得清。只有 yolo 或者名单里全是认识的名字时这行才不出现。
     if names and (wrong := approval.ineffective(cfg.approval, names)):
-        record("审批名单", None, f"{'、'.join(wrong)} 不在工具表里，拦不住（名字打错了？）")
+        record("审批名单", None, approval.why(wrong, filtered=cfg.mcp.filtering))
 
 
 def _check_sessions(record: Recorder) -> None:

@@ -23,7 +23,7 @@ readonly 模式下写操作本来就被 `permissions` 拒了，这里还会再�
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -87,6 +87,24 @@ def ineffective(cfg: ApprovalConfig, available: Iterable[str]) -> list[str]:
     have = set(available)
     known = set(DEFAULT_GATED_TOOLS)
     return [name for name in cfg.gated_tools if name not in have and name not in known]
+
+
+def why(wrong: Sequence[str], *, filtered: bool = False) -> str:
+    """把 `ineffective` 的结果说成一句人话。
+
+    放在这儿是因为**启动时**和 **`doctor`** 两处都要说，而且必须说得一模一样：
+    两句话一旦分头改，就会出现"自检说 A、启动说 B"这种最费解的提示。现在它还
+    多了一个分支（`filtered`），更该只留一处 —— 分叉复制两遍是它们开始漂的方式。
+
+    句子本身不带标签（"审批名单里的"）：`doctor` 那行已经有"审批名单"当行名了，
+    再写一遍是啰嗦。谁有标签谁加。
+
+    `filtered` 是"配了 `[mcp] include/exclude`"。那时候名字认不出来还有第二个
+    可能的原因：工具**确实存在**，只是被过滤掉了。不提这一句的话，人会去翻自己
+    根本没打错的那个名字。
+    """
+    hint = "名字打错了，或者被 [mcp] include/exclude 过滤掉了？" if filtered else "名字打错了？"
+    return f"{'、'.join(wrong)} 不在这次的工具表里 —— 写了也拦不住（{hint}）"
 
 
 def pending(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:

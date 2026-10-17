@@ -8,15 +8,19 @@
 例外：`skills list` 会扫开发机真实的 `~/.claude/skills`（`paths.skill_search_paths`
 有意算上它，好复用机器上已有的技能），所以那里的断言**不数数量** —— 数了就变成
 "取决于谁在跑测试"。
+
+末尾那两条是**进程内**的（其余全是子进程），理由是子进程造不出它们要的那个输入：
+"过滤掉了几个工具"得先真连上一个 MCP 服务，而这里要验的只是那句话说得对不对。
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from conftest import run_cli
 
-from maa import __version__
+from maa import __version__, cli, mcp, ui
 
 
 def test_help_列出所有命令(maa_home: Path) -> None:
@@ -178,3 +182,86 @@ def test_doctor_默认名单不报错(maa_home: Path) -> None:
 
         assert result.returncode == 0, result.stdout + result.stderr
         assert "审批名单" not in result.stdout, f"{agent} 的默认名单被误报了"
+
+
+def test_mcp_list_把配的过滤写出来(maa_home: Path) -> None:
+    """配了 `[mcp] include/exclude` 就得在 `mcp list` 里看得见。
+
+    这一条是拿来回答"服务明明在、工具怎么没进来"的。不写出来的话，人会一直翻
+    `.mcp.json`，而答案在 config.toml 里。
+    """
+    maa_home.mkdir(parents=True, exist_ok=True)
+    (maa_home / "config.toml").write_text(
+        '[mcp]\ninclude = ["demo_*"]\nexclude = ["*_delete"]\n', encoding="utf-8"
+    )
+
+    result = run_cli(["mcp", "list"], maa_home, cwd=maa_home)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "工具过滤" in result.stderr
+    assert "demo_*" in result.stderr and "*_delete" in result.stderr
+
+
+def test_doctor_配了过滤就多提一句(maa_home: Path) -> None:
+    """审批名单里认不出的名字，配上工具过滤之后有**两个**可能的原因。
+
+    只说"名字打错了"会让人去翻一个自己没打错的名字 —— 加了过滤就得把第二种可能
+    也说出来。这条走子进程，验的是那句话真到了人眼前。
+    """
+    maa_home.mkdir(parents=True, exist_ok=True)
+    (maa_home / "config.toml").write_text(
+        '[approval]\ngated_tools = ["write_file", "excute"]\n\n[mcp]\ninclude = ["demo_*"]\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli(["doctor"], maa_home, OPENAI_API_KEY="sk-x")
+
+    assert result.returncode == 0, "错别字是提醒，不是故障"
+    assert "过滤掉了" in result.stdout
+
+
+# --------------------------------------------------------------------------- 进程内：两句话
+
+
+def _said(call: Callable[[], None]) -> str:
+    """`warn` 走的是 stderr 那个 console（stdout / stderr 分家是刻意的），抓它。
+
+    抓完把换行拉平：rich 会按终端宽度折行，折在哪儿不该影响"这句话说没说清"。
+    """
+    with ui.err_console.capture() as captured:
+        call()
+    return " ".join(captured.get().split())
+
+
+def test_过滤掉的工具要说出来() -> None:
+    """静默过滤是这功能最坏的形态：配错一个模式，得到的是一个"什么都干不了但看着
+    正常"的 agent，而且没有一行字提示原因。所以 `Loaded.dropped` 得有人念出来。
+
+    这条**进程内**（这个文件其余全是子进程）：要造出"过滤掉了工具"的 `Loaded`，
+    子进程那边得真连一个 MCP 服务，而那件事跟"这句话说没说清"没关系。
+    """
+    said = _said(lambda: cli._warn_filtered(mcp.Loaded(dropped=["demo_echo", "demo_add"])))
+
+    assert "过滤掉了 2 个工具" in said
+    assert "demo_echo" in said and "demo_add" in said
+
+    # 几十个工具的服务是常态，全列出来会把启动那几行刷没
+    many = _said(lambda: cli._warn_filtered(mcp.Loaded(dropped=[f"demo_t{i}" for i in range(20)])))
+    assert "过滤掉了 20 个工具" in many
+    assert "只列前 8 个" in many
+    assert "demo_t7" in many and "demo_t19" not in many, "超过上限的得截断"
+
+    assert _said(lambda: cli._warn_filtered(mcp.Loaded())) == "", "没过滤就一个字都不该说"
+
+
+def test_banner_里带上过滤掉的数量() -> None:
+    """banner 是人每次都会扫一眼的地方 —— 过滤这件事得留在上面。"""
+    server = mcp.McpServer(name="demo", spec={"url": "https://x"}, source=Path(".mcp.json"))
+    loaded = mcp.Loaded(
+        tools=[object()], reports=[mcp.ServerReport(server=server)], dropped=["demo_delete"]
+    )
+
+    assert cli._mcp_summary(loaded) == "1 个工具 / 1 个服务（demo），[mcp] 过滤掉 1 个"
+    assert cli._mcp_summary(mcp.Loaded(tools=[object()], reports=[mcp.ServerReport(server)])) == (
+        "1 个工具 / 1 个服务（demo）"
+    ), "没配过滤的时候 banner 上不该多出字来"

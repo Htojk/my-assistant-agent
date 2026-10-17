@@ -109,6 +109,17 @@ class McpConfig(BaseModel):
 
     tool_timeout: int = Field(default=120, ge=1)
 
+    include: list[str] = Field(default_factory=list)
+    """只留名字匹配这些模式的工具；空 = 都留。`*` 通配，匹配的是 `服务_工具` 全名。"""
+
+    exclude: list[str] = Field(default_factory=list)
+    """去掉名字匹配这些模式的工具。**排除赢**：两边都匹配时按去掉算。"""
+
+    @property
+    def filtering(self) -> bool:
+        """配没配过滤 —— 用来决定"要不要提一句"。"""
+        return bool(self.include or self.exclude)
+
 
 class SkillsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -159,6 +170,10 @@ gated_tools = ["write_file", "edit_file", "delete", "execute"]
 [mcp]
 config_files = [".mcp.json", "~/.maa/mcp.json"]   # 后面的覆盖前面的
 tool_timeout = 120
+# 工具过滤：`*` 通配，匹配的是「服务名_工具名」全名。服务一多，几十个工具会全进
+# 系统提示 —— 这里按名字筛一遍。include 空着表示都留，exclude 跟它冲突时以 exclude 为准。
+include = []        # 例：["demo_*"] —— 只留 demo 这个服务的工具
+exclude = []        # 例：["*_delete", "*_write"]
 
 [skills]
 extra_dirs = []
