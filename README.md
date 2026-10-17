@@ -1,7 +1,7 @@
 # my-assistant-agent
 
 跑在终端里的通用助手 agent：**能写文章、能写代码、能做任务规划**。
-可加载技能（skills）、可插拔沙箱、MCP 服务从配置文件动态接入。
+可加载技能（skills）、可插拔沙箱、MCP 服务从配置文件动态接入、能贴图给模型看。
 
 基于 [`deepagents`](https://github.com/langchain-ai/deepagents) SDK 构建。
 
@@ -27,8 +27,8 @@ maa chat                                  # 交互式
 
 | 命令 | 说明 |
 |---|---|
-| `maa run "<prompt>"` | 一次性执行 |
-| `maa chat [--resume <thread>]` | 交互式 REPL |
+| `maa run "<prompt>" [--image <图>]` | 一次性执行，可附图 |
+| `maa chat [--resume <thread>]` | 交互式 REPL（`/image <路径>` 附图） |
 | `maa --agent writer\|coder\|planner\|general` | 指定能力 profile |
 | `maa config show\|init` | 配置管理 |
 | `maa mcp list\|test` | MCP 服务管理 |
@@ -66,6 +66,35 @@ exclude = ["*_delete", "demo_*"]  # 去掉删除类、去掉 demo 整个服务
 
 被筛掉的名字会在启动时印一行、`maa mcp test` 里也标着 —— 过滤是**看得见**的，
 不会静默少几个工具。
+
+## 贴图
+
+`maa run` 加 `--image`（短写 `-i`，可给多次），或在 `maa chat` 里敲 `/image <路径>`：
+
+```bash
+maa run "这张图里有什么问题？" --image screenshot.png
+maa run "对比这两张的差异" -i before.png -i after.png
+
+maa chat
+> /image design.png        # 附上，只跟下一句走
+> 这个配色怎么样
+> /image                   # 不带参数：看当前附了哪些
+```
+
+- 认 **PNG / JPEG / GIF / WebP**，按**文件头**认而不是看后缀 —— 一个叫 `shot.png` 的
+  文本文件会被当场拒掉，不会顶着 PNG 的名义发出去。
+- 单张上限 **20 MB**（base64 之后体积还要涨三分之一）。
+- 图按 data URI 内联在请求体里，**不走图床** —— 本地 CLI 没有图床，也不该为了看张图
+  先上传一次。
+- 路径打错 / 不是图 / 太大：**当场报错退出**，不会等模型和 MCP 都装配好了才告诉你。
+- 没图的时候消息还是纯文本 —— 贴图没有改变原来的行为。
+- `/image` 附的图**只跟下一句**（成功、失败、中断都清），免得后面每一句都莫名其妙又
+  看一遍那张图。
+- 贴过的图会跟着会话存进 `~/.maa/sessions.db`，之后每轮都会重发，所以贴图的会话库会
+  明显变大；目前没有"把某张图从历史里去掉"的命令。
+
+**端点得支持多模态输入。** 这是对面的事：请求体里带的是内容块，端点不认就会报错或
+干脆忽略图。`maa doctor` 检查不了这一条，只能真发一张试试。
 
 ## ⚠️ 安全提示
 

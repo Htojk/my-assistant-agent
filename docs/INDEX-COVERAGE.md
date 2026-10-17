@@ -37,7 +37,7 @@
 | `memory.md` | 长期记忆、scoped memory | 未引入 | `memory=` 没传。记忆会往**用户项目**里写文件（进程自己决定写什么），而 `write_file` 恰恰在审批门的另一边 —— 让中间件绕过审批写盘，就把 C8 刚建立起来的边界拆了。跨会话的连续性由 `--resume` 的线程恢复提供 |
 | `context-engineering.md` | 输入上下文、运行时上下文、自定义 state、压缩、子代理隔离、长期记忆 | 部分引入 | 压缩走 SDK 默认的 summarize 中间件（长会话不会撑爆窗口），上下文隔离靠子代理（子代理只有自己的消息）。**未引入**：自定义 state schema（我们不需要图里多带状态）、长期记忆 |
 | `profiles.md` | harness profiles、注册键、合并语义、provider profiles、从配置文件加载、作为插件发布 | 部分引入 | **registry 那条是 deepagents 的 beta 概念，我们没用**；用了的是 provider profile 那一半（`[models.providers.<名>]` → `build_model` 的 kwargs）。我们自己的 `Profile` 是另一层东西：能力预设（工具白名单 + 提示词 + 点名的技能 + 子代理），见 `profiles.REGISTRY` —— 两者名字撞了但不冲突 |
-| `multimodal.md` | 多模态输入、`read_file` 读图、自定义工具输出、压缩与多模态 | 未引入 | 输入面是终端文本。`read_file` 读图是 SDK 自带能力，没有主动关掉，但 CLI 里没有"贴一张图"的入口，也就没有对应的验收 |
+| `multimodal.md` | 多模态输入、`read_file` 读图、自定义工具输出、压缩与多模态 | 部分引入 | 输入面有了：`--image`（`maa run`，可给多次）+ REPL 的 `/image`，`attachments.py` 把路径读成内容块（`{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`，图片按 data URI 内联在请求体里，不走图床）。格式按**文件头**认（不看后缀）、单张上限 20 MiB、读图在装配**之前**（路径打错当场退）。没图时消息形状一个字不变。**未引入**：工具输出侧的图（要工具自己产出内容块，我们这套工具里没有）、压缩与多模态的交互（长会话里图会不会被 summarize 中间件丢掉，没验过） |
 | `human-in-the-loop.md` | 基本配置、决定类型、条件中断、处理中断、流式处理、多工具调用、拒绝理由、改参数、子代理中断、权限中断 | 部分引入 | 审批循环整个在 `approval.py` + `cli._run_turn`：中断从 `stream_mode="updates"` 的 `__interrupt__` 里捞，`Command(resume={"decisions": [...]})` **按位置**对齐，多工具调用时决定数量不足就拿 reject 补满，拒绝理由原样转给模型，子代理里的 gated 工具照样问。**未引入**：让用户**改**参数再批（edit）、把 `permissions` 的 `interrupt` 模式也接成对话框 |
 | `rubric.md` | `RubricMiddleware`、LLM-as-a-judge、迭代到达标 | 未引入 | 需要**第二个模型**当裁判并可能多轮重跑。"写一篇 800 字的文章"的"达标"由人看，不由裁判模型看；把它打开等于每次任务翻倍或三倍的 token，换一个对人来说不透明的判据 |
 | `fault-tolerance.md` | 错误处理策略、限流、重试、回退 | 部分引入 | 重试由 provider SDK 兜底；我们自己做的容错是 **MCP 按服务隔离**（`mcp.connect` 并行连 + 一个坏服务不连累别的，`cli._mcp_summary` 把失败原因印出来）。**未引入**：显式限流、模型回退链（配了 `[models.providers]` 的用户自己知道主备，我们不自作主张切模型 —— 悄悄换模型比报错更难查） |
@@ -193,24 +193,32 @@ Client failed to connect: Event loop is closed          # 换一条循环 ainvok
 
 | | 篇数 | 已引入 | 部分引入 | 未引入 | 参考 |
 |---|---|---|---|---|---|
-| Python 核心 | 35 | 7 | 13 | 13 | 2 |
+| Python 核心 | 35 | 5 | 12 | 16 | 2 |
 | Frontend | 4 | 0 | 0 | 4 | 0 |
-| Deep Agents Code | 17 | 1 | 8 | 7 | 1 |
-| **合计** | **56** | **8** | **21** | **24** | **3** |
+| Deep Agents Code | 17 | 1 | 9 | 5 | 2 |
+| **合计** | **56** | **6** | **21** | **25** | **4** |
 
-「未引入」的 24 篇里，按原因归堆：
+（这张表是**数出来的**，不是写上去的：把上面三张表的「结论」列点一遍。
+它和文档里第一版差了十几个 —— 第一版是照印象写的，而印象会把"部分引入"记成
+"未引入"。）
 
-- **要有服务端才有意义**（13 篇）：`async-subagents`、`going-to-production`、`acp`、
-  `ag-ui`、`a2a`、`retrieval`、`rag`、`deep-research`、4 篇 Frontend、`plugin`/`extensions`。
-  本地 CLI 没有可部署的面，也没有第二个宿主。
-- **要额外的模型调用**（2 篇）：`rubric`、`approval-modes` 的 Auto 模式。
+「未引入」的 25 篇里，按原因归堆（每组都点名到篇，加起来正好 25）：
+
+- **要有服务端才有意义**（14 篇）：`async-subagents`、`going-to-production`、`acp`、
+  `ag-ui`、`a2a`、`retrieval`、`rag`、`deep-research`、4 篇 Frontend、
+  `code/plugins`、`code/extensions`。本地 CLI 没有可部署的面，也没有第二个宿主。
 - **是一个独立子系统**（4 篇）：`interpreters`、`data-analysis`、`sandboxes`、
-  `code/remote-sandboxes`（远程沙箱的后半条）。
-- **会拆掉已有的安全边界**（4 篇）：`memory`、`code/hooks`、`code/plugins`、
-  `code/extensions` —— 共同点是"让进程或第三方在不问人的情况下动手"。
-- **面向图形界面**（1 篇）：`event-streaming`。
+  `code/remote-sandboxes`。要新后端、新工具集、新账密，不是"顺手引入"的一项能力。
+- **会拆掉已有的边界**（3 篇）：`memory`、`code/hooks`、`dynamic-subagents` ——
+  共同点是**把决定权从"启动那一刻"挪走**：记忆是中间件自己决定往用户项目写什么文件
+  （而 `write_file` 恰好在审批门另一边）、hook 是配置文件里能写代码执行、
+  动态子代理是"能派的对象"从启动就定死的四种变成运行时才知道。
+- **要额外的模型调用**（2 篇）：`rubric`、`code/goals-and-rubrics`。要第二个模型当裁判，
+  token 翻倍，换一个对人来说不透明的判据。
+- **面向图形界面**（1 篇）：`event-streaming`。终端里没有卡片可更新。
+- **是另一个产品**（1 篇）：`openwiki`。它是个独立 CLI，不是 SDK 里的一顶能力。
 
-**这不是一份"欠债清单"。** 56 篇里有 24 篇没做，绝大多数是因为它们解决的问题不是这个
+**这不是一份"欠债清单"。** 56 篇里有 25 篇没做，绝大多数是因为它们解决的问题不是这个
 项目要解决的问题。真正值得回头看的只剩一条：`sandboxes.md`（本地无隔离这件事，最终
 要有个比审批更硬的答案）。
 
