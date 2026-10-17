@@ -761,7 +761,7 @@ def doctor(ctx: typer.Context) -> None:
 
 
 def _force_utf8_output() -> None:
-    """把 stdout / stderr 固定成 UTF-8。
+    """把 stdout / stderr / **管道里的 stdin** 固定成 UTF-8。
 
     Windows 上 Python 默认跟控制台代码页走（中文机器是 GBK），
     打 `✓` 这类符号会直接抛 UnicodeEncodeError 把 CLI 打崩。
@@ -769,8 +769,19 @@ def _force_utf8_output() -> None:
 
     注意改的是同一个流对象，`ui` 里已经建好的 Console 会跟着变 ——
     rich 取的是 `sys.stdout` 本身，不是当时的快照。
+
+    stdin 只在**不是终端**的时候动，而且是真踩过：`printf '中文' | maa chat`
+    时 stdin 按 GBK 解 UTF-8 的字节，解出来的是一串代理对（`\\udca8` 这种），
+    一路带到请求体里才炸 `UnicodeEncodeError: surrogates not allowed` ——
+    崩在模型调用那一层，离真正的原因（读进来的时候就错了）隔了十万八千里。
+    终端里的 stdin 不动：那儿的编码由终端定，替它做主只会把能用的弄坏。
     """
-    for stream in (sys.stdout, sys.stderr):
+    streams = [sys.stdout, sys.stderr]
+    # 终端里的 stdin 不动：那儿的编码由终端定，替它做主只会把能用的弄坏。
+    isatty = getattr(sys.stdin, "isatty", None)
+    if isatty is None or not isatty():
+        streams.append(sys.stdin)
+    for stream in streams:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue

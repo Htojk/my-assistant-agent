@@ -366,6 +366,34 @@ def test_chat_能读管道里的命令(tmp_path: Path) -> None:
     assert "没有这个命令：/nope" in _both(result)
 
 
+def test_管道里的中文按_utf8_读(project: Path, home_with_config: Path, fake_openai: str) -> None:
+    """管道送进来的中文得按 UTF-8 解，不能跟控制台代码页走。
+
+    这条是**真跑出来的**：`printf '中文' | maa chat`，管道里是 UTF-8 字节，而
+    Windows 上非终端的 stdin 默认按代码页（中文机器 GBK）解，解出来是一串代理对
+    （`\\udcad\\udc87` 这种）。它不在这儿炸 —— 一路带到请求体里才炸
+    `UnicodeEncodeError: surrogates not allowed`，崩在模型调用那一层，离真正的原因
+    （读进来的时候就错了）隔了十万八千里。`_force_utf8_output()` 顺手把非终端的
+    stdin 也钉成 UTF-8，这条就是钉住它。
+
+    `PYTHONIOENCODING=gbk` 是为了让它在**英文机器上也一样能红**：真机上触发它的是
+    "中文 Windows 的控制台代码页"，而那台机器不是到处都有。
+    """
+    env = {
+        "OPENAI_BASE_URL": fake_openai,
+        "OPENAI_API_KEY": "sk-fake",
+        "PYTHONIOENCODING": "gbk",
+    }
+
+    result = run_cli(["chat"], home_with_config, cwd=project, stdin="暗号是香蕉\n/exit\n", **env)
+
+    assert result.returncode == 0, _both(result)
+    # 断言的是"对面到底看见了什么"：没修的话连读都读不动（strict 下直接
+    # UnicodeDecodeError），修得不对则是一串问号 —— 两种都过不了这一条。
+    users = [m["content"] for m in Handler.requests_seen[0]["messages"] if m["role"] == "user"]
+    assert "暗号是香蕉" in users[0]
+
+
 # ------------------------------------------------- 验收：真 HTTP、真两个进程
 
 
