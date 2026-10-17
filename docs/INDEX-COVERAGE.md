@@ -91,7 +91,7 @@
 | `code/memory-and-skills.md` | Memory（`AGENTS.md` 之类）与 Skills | 部分引入 | 技能半节等同 `skills.md` 那条；记忆半节见 `memory.md` |
 | `code/goals-and-rubrics.md` | 目标与评分标准 | 未引入 | 同 `rubric.md` |
 | `code/hooks.md` | 生命周期 hook：事件、输入负载、handler 输出、安全 | 未引入 | `dcode` 的 hook 是**在 CLI 里配置的脚本钩子**（用户往配置文件里写一段程序，agent 到了某个事件就跑它）。这等于给配置文件加了代码执行能力 —— 我们刻意没有：配置文件只描述，不执行 |
-| `code/mcp-tools.md` | MCP 快速开始、自动发现、配置格式、多服务、工具超时、工具过滤、OAuth、服务状态、项目信任、系统提示感知 | 部分引入 | 自动发现（`.mcp.json` + `~/.maa/mcp.json`，后者覆盖前者）、多服务、工具超时（`tool_timeout`）、服务状态（`maa mcp test`）、系统提示感知（banner 里报"接上了几个服务几个工具"）都在。**未引入**：工具过滤（黑白名单）、OAuth 登录、项目级信任确认 |
+| `code/mcp-tools.md` | MCP 快速开始、自动发现、配置格式、多服务、工具超时、工具过滤、OAuth、服务状态、项目信任、系统提示感知 | 部分引入 | 自动发现（`.mcp.json` + `~/.maa/mcp.json`，后者覆盖前者）、多服务、工具超时（`tool_timeout`）、**工具过滤**（`[mcp] include / exclude`，`mcp.keeps()`：匹配带前缀的全名、`*` 通配、排除赢；筛掉的记进 `Loaded.dropped` 并印出来）、服务状态（`maa mcp test`）、系统提示感知（banner 里报"接上了几个服务几个工具"）都在。**未引入**：OAuth 登录、项目级信任确认 |
 | `code/plugins.md` | 插件与市场 | 未引入 | 非目标（插件市场）。而且插件 = 装进来就能执行的第三方代码，一个本地工具装插件系统等于把信任边界整个交出去 |
 | `code/extensions.md` | Python 扩展、能力注册、来源选择、信任项目扩展、打包进插件 | 未引入 | 同 `plugins.md`。要"给 agent 加能力"的用户，现在有两条已经在的路：写技能（说明）、配 MCP 服务（工具） |
 | `code/remote-sandboxes.md` | 远程沙箱旗标、可插拔提供方、启动脚本 | 未引入 | 同 `sandboxes.md` |
@@ -110,7 +110,7 @@
 
 ## 5. 与 PLAN.md 不符的地方（实测纠正）
 
-§5.4「MCP 流程」里有两句话是照文档推的，落地时实测出来对不上。**以这里为准**：
+§5.4「MCP 流程」里有几句话是照文档推的，落地时实测出来对不上。**以这里为准**：
 
 ### 5.1 工具名**没有**被自动加前缀
 
@@ -121,7 +121,7 @@ PLAN 原文：「工具名由 FastMCP 自动加 `{server}_` 前缀，无需手�
 自己加的 —— 见 `mcp._one()`：
 
 ```python
-prefix = _prefix(server.name)                      # 服务名里的非法字符换成 _
+prefix = _prefix(server.name)  # 服务名里的非法字符换成 _
 named.append(tool.model_copy(update={"name": f"{prefix}_{tool.name}"}))
 ```
 
@@ -167,6 +167,26 @@ PLAN 原本说「按 annotations 决定是否进审批门，**而非硬编码工
 
 这一条不在「已验证」里，是**设计取舍**，写在这里免得下一个人以为漏了。
 
+### 5.4 MCP 工具**只有异步实现**，同步的 CLI 拿到手也调不动
+
+文档（以及 PLAN）都把 MCP 工具当成"连上就能用"。实测不是，而且是**两层**都撞了：
+
+```text
+StructuredTool does not support sync invocation.        # tool.invoke() 直接抛
+Client failed to connect: Event loop is closed          # 换一条循环 ainvoke 也抛
+```
+
+原因在 `langchain.mcp` 里：它用 `StructuredTool(coroutine=call_tool, ...)` 造工具，
+**没有 `func`**，所以同步入口一调就是上面第一条；而 `fastmcp.Client` 绑在"构造它那一刻的
+事件循环"上，`asyncio.run(mcp.connect(...))` 一返回循环就关了，于是第二条。
+
+这件事的教训不在于"要加个循环"，在于**它躺了很久没人发现**：所有 MCP 测试验的都是
+"连上了没有""工具名对不对"，没有一条真的**调**过一次工具。装配对了 ≠ 跑得起来。
+解法（`mcp.Loop` + `mcp.bind()`）和为什么没把整个 CLI 改成异步，记在
+[ARCHITECTURE.md §4 第 ⑨ 条](ARCHITECTURE.md#4-几个关键决定以及它们的代价)。
+
+覆盖率钉在 `tests/test_mcp.py::test_接上同步入口就能同步调`（以及它下面那三条）。
+
 ---
 
 ## 6. 统计
@@ -191,6 +211,11 @@ PLAN 原本说「按 annotations 决定是否进审批门，**而非硬编码工
 - **面向图形界面**（1 篇）：`event-streaming`。
 
 **这不是一份"欠债清单"。** 56 篇里有 24 篇没做，绝大多数是因为它们解决的问题不是这个
-项目要解决的问题。真正值得回头看的只有两条：`sandboxes.md`（本地无隔离这件事，最终
-要有个比审批更硬的答案）和 `code/mcp-tools.md` 的工具过滤（服务一多，工具表会撑爆
-系统提示）。
+项目要解决的问题。真正值得回头看的只剩一条：`sandboxes.md`（本地无隔离这件事，最终
+要有个比审批更硬的答案）。
+
+原本还有第二条 —— `code/mcp-tools.md` 的工具过滤（服务一多，工具表会撑爆系统提示）——
+已经做了。回头看它值不值：**值，但值的地方跟预想的不一样**。过滤本身是 `keeps()` 十几行，
+半天就完了；真正花时间的是"筛掉的东西得能被看见"（`Loaded.dropped` → `cli._warn_filtered`），
+以及写完单测之后拿真模型跑一次才发现**工具根本调不动**（§5.4）。也就是说，这一条从"已知
+缺口"变成了"顺手挖出两个没写在任何清单上的坑"。剩下那条 `sandboxes.md` 大概率也一样。

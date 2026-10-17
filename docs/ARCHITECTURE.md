@@ -40,20 +40,20 @@ agent 内核用 `deepagents` SDK，**不自研**。这个仓库写的是内核�
 
 | 模块 | 行数 | 职责 | 不认识谁 |
 |---|---|---|---|
-| `cli.py` | 733 | typer 应用、命令体、REPL、装配流程 | — |
-| `mcp.py` | 408 | 读 `.mcp.json`、强制校验、建传输、连服务、工具改名 | `profiles` / `cli` |
+| `cli.py` | 801 | typer 应用、命令体、REPL、装配流程 | — |
+| `mcp.py` | 552 | 读 `.mcp.json`、强制校验、建传输、连服务、工具改名与过滤、同步入口 | `profiles` / `cli` |
 | `profiles.py` | 363 | 四种能力预设、建模型、建 agent、技能提示 | `cli` / `ui` |
 | `skills.py` | 261 | 技能源发现、优先级去重、frontmatter 解析、后端路由表 | `profiles` / `cli` |
 | `session.py` | 261 | 会话索引（sqlite 表）+ `SqliteSaver` | `cli` |
+| `config.py` | 233 | 四个配置段、TOML 读写、`${VAR}` 展开、模板 | 上层全部 |
 | `checks.py` | 230 | `doctor` 的十一项自检 + 打表 | `cli` / typer |
-| `config.py` | 218 | 四个配置段、TOML 读写、`${VAR}` 展开、模板 | 上层全部 |
-| `approval.py` | 192 | `interrupt_on` 表、审批人、参数整理 | `cli` |
+| `approval.py` | 210 | `interrupt_on` 表、审批人、参数整理 | `cli` |
+| `ui.py` | 184 | rich 渲染（唯一直接碰终端的地方） | 业务层全部 |
 | `subagents.py` | 182 | 三个子代理规格（工具白名单是冻住的） | `cli` |
-| `ui.py` | 156 | rich 渲染（唯一直接碰终端的地方） | 业务层全部 |
 | `paths.py` | 125 | `MAA_HOME`、项目根、路径决议与显示 | 上层全部 |
 | `backends.py` | 86 | 沙箱后端工厂 + 权限规则 | 上层全部 |
 
-`cli.py` 现在是 733 行。它大是有原因的：typer 的命令体不好往下拆（拆成函数就得一路把
+`cli.py` 现在是 801 行。它大是有原因的：typer 的命令体不好往下拆（拆成函数就得一路把
 `ctx` 传下去），所以留在这儿的是"只有站在命令行这个位置才看得清"的东西。`doctor` 的
 十一项检查本来也在这儿，后来切去了 `checks.py` —— 理由是**它跟命令行毫无关系**：
 输入是四个字段、输出是一张表和"全绿没有"，一行 typer 都不认识。切出去之后有个额外
@@ -72,7 +72,9 @@ _load_config                    读 ~/.maa/config.toml（没有就用默认值�
   ↓
 resolve_workspace               配置里的相对路径按**项目根**算，不按 cwd
   ↓
-mcp.discover → mcp.connect      asyncio.run 连上各服务，拿工具（**并行**连）
+mcp.discover → mcp.connect_blocking
+  ↓                             在 MCP 自己那条循环里连（**并行**），拿工具、按
+  ↓                             include/exclude 筛，再给每个工具接上同步入口
   ↓  一个服务连不上：记一条问题，其余照旧
 profiles.build_agent            skills.discover → backends.build_backend
   ↓                             → resolve_model → create_deep_agent(...)
@@ -155,6 +157,22 @@ gated 工具真的拦住写操作、技能正文真的能被 `read_file` 读到 
 `~/.agents/skills` 是**有意**算进去的生产行为（复用机器上已有的技能），不隔离的话
 测试结果就取决于跑它的机器上装了什么。
 
+**⑨ MCP 跑在自己那条事件循环上，CLI 一行都不用改成异步。**
+`langchain.mcp` 造出来的工具**只有异步实现**，同步调直接
+`NotImplementedError: StructuredTool does not support sync invocation`；而
+`fastmcp.Client` 绑在"建它那个循环"上 —— `asyncio.run` 连完一返回循环就关了，之后
+再起一条循环去调是 `Client failed to connect: Event loop is closed`。**两条都实测撞过。**
+所以 `mcp.Loop` 是一条跑在守护线程上的进程级循环，从连上那一刻活到最后一轮对话结束，
+`bind()` 给每个工具补一个转手调原 `coroutine` 的同步 `func`（`args_schema` /
+`handle_tool_error` / `response_format` 全留在原对象上，同步异步两条路行为一致）。
+
+另一条路是把整个 CLI 改成异步（`graph.astream`）——**没走**，因为代价全落在跟 MCP
+无关的地方：`session.Store` 的 checkpointer 和索引表**共用一条 sqlite 连接**是刻意的
+（同一个线程里一前一后写，撞不上写锁），而 `AsyncSqliteSaver` 要的是 aiosqlite 的另一条
+连接；`chat` 的 REPL、`sessions list`、`doctor` 也得跟着传染成异步。为一个工具来源把整个
+CLI 翻过来不划算。代价：多一个常驻线程，以及"工具必须在 `_LOOP` 里调"这条隐含约定 ——
+后者靠 `bind()` 是唯一出口来保证（工具只在 `connect_blocking()` 里出去）。
+
 ---
 
 ## 5. 数据落在哪儿
@@ -197,15 +215,12 @@ gated 工具真的拦住写操作、技能正文真的能被 `read_file` 读到 
 
 1. **提示词零测试。** 见 ⑤ 的代价。§7.1 那条手工清单能证明装配是通的，但证明不了
    `WRITER_PROMPT` 里那句话有用 —— 那需要一个能判断文章好坏的标准，现在没有。
-2. **MCP 工具表会撑爆系统提示。** 服务一多，几十个工具全进 system prompt。
-   `code/mcp-tools.md` 的工具过滤（黑白名单）没做 —— 这是 INDEX-COVERAGE §6 里
-   点名值得回头看的第二条。
-3. **多模态输入没入口。** SDK 的 `read_file` 能读图，CLI 里没地方贴图。
+2. **多模态输入没入口。** SDK 的 `read_file` 能读图，CLI 里没地方贴图。
 
 **从这份清单上划掉的**（留着是为了记住它们当初为什么能被忽略这么久）：
 
 - ~~`cli.py` 906 行，`doctor` 该切出去~~ —— 切了，现在是 `checks.py` 230 行 +
-  `cli.py` 733 行。切完还捡到一个好处：那些检查从"只能隔着子进程测"变成同进程
+  `cli.py` 801 行。切完还捡到一个好处：那些检查从"只能隔着子进程测"变成同进程
   可直接测（§7 里那条假缺口因此缩小了）。**这条之所以一直没做**，是因为"文件大"
   本身不疼 —— 直到要给它写测试，才发现大和测不到是同一件事。
 - ~~`interrupt_on` 里写错工具名不报错~~ —— 已修（`c8b21a6`）。这类错**只有在真跑一次
@@ -213,6 +228,16 @@ gated 工具真的拦住写操作、技能正文真的能被 `read_file` 读到 
   那个名字从来没有谁去核对。现在启动和自检都会说。
 - ~~文档里的相对链接没有自动检查~~ —— 已收成 `tests/test_docs.py`，文件在不在、
   锚点对不对都验，新写的 md 自动进表。
+- ~~MCP 工具表会撑爆系统提示，`code/mcp-tools.md` 的工具过滤没做~~ —— 做了
+  （`[mcp] include / exclude`，`mcp.keeps()`）。**这条的教训比它的实现值钱**：过滤
+  本身半天就写完了，真花时间的是"过滤掉的东西必须能被看见"——静默筛掉一批工具得到的
+  是"什么都干不了但看着正常"的 agent，跟上面那条写错工具名的错别字是同一类。
+  而且**它是真跑一次模型才暴出来的**：过滤写完、单测全绿，拿真模型一跑
+  `maa run`，模型调不动工具 —— 顺带挖出下面这条。
+- ~~MCP 工具到手调不动（`StructuredTool does not support sync invocation`）~~ ——
+  已修，见 ⑨。这条在仓库里躺了很久没人发现，因为**从没有测试真的调过一次 MCP 工具**：
+  测的都是"连上了没有""工具名对不对"。又一次印证同一件事：*装配对了 ≠ 跑得起来*，
+  而后者只有真跑才知道。
 
 ---
 
@@ -227,18 +252,21 @@ gated 工具真的拦住写操作、技能正文真的能被 `read_file` 读到 
 | 集成 | CLI 每个命令通不通、退出码对不对 | **子进程**跑 `python -m maa` |
 
 **为什么冒烟要真起进程**：入口、`__main__.py`、退出码、stdout/stderr 分家，这些直接
-调 `cli.main()` 是测不到的。代价是覆盖率报告里 `cli.py` 只有 32% —— 那是**假缺口**，
+调 `cli.main()` 是测不到的。代价是覆盖率报告里 `cli.py` 只有 33% —— 那是**假缺口**，
 命令体跑在子进程里，进程内的 coverage 看不见。（这个缺口原本更大：`doctor` 那些检查
 也算在里面。它们搬去 `checks.py` 之后就回到同进程了 —— "文件太大"和"测不到"往往是
 同一件事。）
 
-现状：**261 条**，全绿，约 3 分钟。覆盖率（临时装 coverage 量的，量完卸掉了）总 **80%**；
+现状：**287 条**，全绿，约 3 分钟。覆盖率（临时装 coverage 量的，量完卸掉了）总 **81%**；
 扣掉只能靠子进程跑到的 `cli.py` + `__main__.py`，进程内代码 **97%**
 （这个数比总数有意义得多）。`config` / `backends` / `approval` / `subagents` / `profiles`
-是 100%，`checks` 98%、`session` 99%、`paths` / `skills` 98%。
+是 100%，`checks` / `paths` / `skills` 98%、`session` 99%、`ui` 94%、`mcp` 93%。
 
 剩下那些没盖到的基本是**测不动**的分支，不是懒：`checks` 缺的那两行是"目录不可写"
-（Windows 上没法用权限位可靠地造出来），`ui` / `mcp` 缺的是真实终端尺寸与网络半途断开。
+（Windows 上没法用权限位可靠地造出来），`ui` 缺的是真实终端尺寸，`mcp` 缺的是 SSE /
+streamable-http 两条传输分支和几处"连到一半断了"的兜底 —— 这些都得有个真服务在对面
+才能走到。**注意 `mcp` 这个数比它看起来好看**：93% 里没有一条测过"工具真被调起来"，
+直到这次补上同步入口（见 §6.2 划掉的那两条）。行覆盖率证明不了这件事。
 
 不连真模型这条红线在 `tests/conftest.py` 里由两层保证：清掉可能影响断言的模型环境变量
 （`no_model_env`），以及把"用户主目录"整个指到临时目录（`isolated_home`），
@@ -248,23 +276,33 @@ gated 工具真的拦住写操作、技能正文真的能被 `read_file` 读到 
 
 上面那张表测的是"我们的代码对不对"，测不出"对面那个端点收不收我们的请求"。这两件事
 之间的缝**很宽**：模型名写错、`base_url` 少了 `/v1`、端点不认 `tools` 字段 —— 每一条
-都能让上面 245 条全绿而产品完全不能用。所以下面这六条**手工**跑，跑完把结论记进
-CHANGELOG（`0.1.0` 那条底下就是 2026-10-16 的一次记录）：
+都能让上面 287 条全绿而产品完全不能用。所以下面这些条**手工**跑，跑完把结论记进
+CHANGELOG（`0.1.0` 那条底下就是 2026-10-16 和 2026-10-17 的两次记录）：
 
 ```bash
 export OPENAI_BASE_URL=http://<端点>/v1     # 注意 /v1，见下面第 1 条
 export OPENAI_API_KEY=sk-...                # 只进环境变量，别写进 config.toml
 export MAA_MODEL=openai:<模型名>
 
-maa doctor                                              # 九项全绿，且「agent 装配」那行有工具表
+maa doctor                                              # 全绿，且「agent 装配」那行有工具表
 maa run "看看当前目录有哪些文件，读一个，用一句话总结"      # 工具循环 + 流式
 printf 'y\n' | maa run "在当前目录写一个 hello.txt"        # 审批：批了就真写
 printf 'n\n' | maa run "在当前目录写一个 nope.txt"         # 审批：拒了就真不写
 maa chat                                                # 多轮；退出时给会话 id
 maa chat --resume <id>                                  # 换一个进程接着聊，得记得上一轮说的话
+
+# —— 有 MCP 服务时（`.mcp.json` 指向一个真服务，stdio 或 http 都行）
+maa mcp list                                            # 服务清单；描述里不该出现任何凭据
+maa mcp test                                            # 连一遍打一张工具表；被 include/exclude 筛掉的标出来
+maa run "用 <服务>_echo 回显 hello"                        # 工具**真被模型调起来**，结果对
 ```
 
-两点实测，值得写下来：
+最后那条 MCP 的不是可选项。**工具过滤写完、单测全绿的那天，拿真模型跑 `maa run`，
+模型调不动工具** —— `NotImplementedError: StructuredTool does not support sync
+invocation`。它跟"审批名单写错字"是同一类：装配对了不等于跑得起来，而"跑得起来"
+只有真跑一次才知道（详见 §6.2 划掉的那两条）。
+
+四点实测，值得写下来：
 
 1. **`/v1` 必须有，而且不加看不出来。** `172.16.3.6:8589` 是个网关，裸路径
    （`http://<host>/chat/completions`）被它当网页路由处理，返回的是前端 HTML，
@@ -276,3 +314,10 @@ maa chat --resume <id>                                  # 换一个进程接着�
    超过 1024，已截断"）。这种技能通常来自 `~/.claude/skills` 里的第三方技能，不是我们
    写的。deepagents 按规范截断后照常继续，所以它无害 —— 但它是**库**在说话，不是我们，
    别把它当成产品的报错。
+4. **管道里的中文曾经会崩，而且崩在离原因十万八千里的地方。** `printf '中文' | maa chat`：
+   Windows 上非终端的 stdin 默认按代码页（中文机器 GBK）解，UTF-8 字节被解成一串代理对，
+   一路带到请求体里才炸 `UnicodeEncodeError: surrogates not allowed` —— 报错指着模型调用，
+   真正错在读进来那一步。现在 `_force_utf8_output()` 把非终端的 stdin 也钉成 UTF-8，
+   回归测试在 `tests/test_session.py::test_管道里的中文按_utf8_读`（用 `PYTHONIOENCODING=gbk`
+   复现，英文机器上一样能红）。**这条提醒的是**：Windows 上凡是"管道/重定向"的输入输出，
+   编码都得显式定，默认值跟机器的语言走。

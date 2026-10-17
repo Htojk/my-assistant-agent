@@ -55,6 +55,18 @@ MCP 配置：项目根 `.mcp.json`，或 `~/.maa/mcp.json`
 <project>/.maa/skills/   <project>/.agents/skills/
 ```
 
+MCP 工具多了会全塞进系统提示，所以 `[mcp] include / exclude` 按名字筛一遍。
+匹配的是**带服务前缀的全名**（`demo_echo`），`*` 通配，两边都命中时 **exclude 赢**：
+
+```toml
+[mcp]
+include = ["*"]                  # 空着表示都留
+exclude = ["*_delete", "demo_*"]  # 去掉删除类、去掉 demo 整个服务
+```
+
+被筛掉的名字会在启动时印一行、`maa mcp test` 里也标着 —— 过滤是**看得见**的，
+不会静默少几个工具。
+
 ## ⚠️ 安全提示
 
 默认沙箱模式 `local` **直接在你的机器上执行命令**（`subprocess.run(shell=True)`），

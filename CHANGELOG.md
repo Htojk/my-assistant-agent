@@ -66,6 +66,23 @@
 **真子进程**。顺带抓到一个真 bug：`maa --version` 退出码是 2（Typer 的 group 回调
 选项默认不是 eager）。测试从 165 涨到 **229**。
 
+**⑪ MCP 工具过滤 + 同步入口** — `feat(mcp)`
+`[mcp] include / exclude`（`config.McpConfig`）：匹配**加了服务前缀之后**的全名、`*`
+通配、大小写敏感、**排除赢**（于是 `include = ["*"]` + `exclude = ["*_delete"]` 能表达
+"全要，除了删除"；反过来的话加一条 include 会悄悄把 exclude 顶掉）。过滤放在
+`mcp.connect()` 里做，因为那是工具表的**唯一出口**；筛掉的名字记进 `Loaded.dropped`，
+`maa run` / `maa chat` 启动时印一行，`maa mcp test` 把它们标在表里 —— **静默筛掉一批
+工具得到的是"什么都干不了但看着正常"的 agent**，跟下面那条审批错别字是同一类错。
+
+同一条 commit 里还修了 MCP 工具**到手调不动**：`langchain.mcp` 造出来的工具只有异步
+实现（`StructuredTool(coroutine=...)`，没有 `func`），同步调直接
+`NotImplementedError`；而 `fastmcp.Client` 绑在"建它那个循环"上，`asyncio.run` 连完
+一返回循环就关，换一条循环再调是 `Client failed to connect: Event loop is closed`。
+解法是 `mcp.Loop`（守护线程上一条进程级循环，从连上活到最后一轮对话结束）+
+`mcp.bind()`（给每个工具补一个转手调原 `coroutine` 的同步 `func`，`args_schema` /
+`handle_tool_error` / `response_format` 全留在原对象上）。**没把整个 CLI 改成异步**，
+理由见 [ARCHITECTURE.md §4 第 ⑨ 条](docs/ARCHITECTURE.md#4-几个关键决定以及它们的代价)。
+
 ### 重构
 
 - **`doctor` 从 `cli.py` 切出去，成了 `checks.py`**。理由不是"文件太长了"——
@@ -88,6 +105,21 @@
   都没有，而默认名单写着它们，只看工具表会每次都刷假警告。
   （**真机跑出来的**：229 条测试全绿、`doctor` 全绿，因为错的不是代码是配置。）
   顺带删掉了 `cli._report` 里一段执行不到的重复代码。
+- **rich 把输出里的方括号当样式标签吃掉了** — `fix(ui)`。`ui.info("[mcp] 过滤掉了 2 个
+  工具")` 印出来是" 过滤掉了 2 个工具"，`include = [demo_*]` 整段消失 —— 不报错、不提示。
+  而方括号在正常内容里到处都是：正则 `[a-z]+`、TOML 段名 `[models]`、报错原文里的
+  `[Errno 2]`。现在**内容一律 `rich.markup.escape`**，真要上样式的地方用 `Text` 对象
+  （`ui.OK` / `WARN` / `BAD` 就是 `Text`，表格里"记号还是记号"另有一条钉住）。
+  这类"内容被静默吃掉"的 bug 一条都不该漏，所以 `test_ui.py` 那边是**参数化**钉的：
+  每个出口 × 每种方括号。
+- **管道里的中文会崩，而且崩在离原因十万八千里的地方** — `fix(cli)`。
+  `printf '中文' | maa chat`：Windows 上非终端的 stdin 默认跟着控制台代码页走（中文机器
+  是 GBK），UTF-8 字节被解成一串代理对（`\udcad\udc87`），一路带到请求体里才炸
+  `UnicodeEncodeError: surrogates not allowed` —— 报错指着模型调用，真正错在读进来那一步。
+  `_force_utf8_output()` 原来只管 stdout / stderr，现在把**非终端的 stdin** 也钉成
+  UTF-8（终端里的 stdin 不动：那儿的编码由终端定，替它做主只会把能用的弄坏）。
+  回归测试 `test_管道里的中文按_utf8_读` 用 `PYTHONIOENCODING=gbk` 复现 —— 英文机器上
+  一样能红，因为真机上触发它的是"中文 Windows 的控制台代码页"。
 
 ### 文档
 
@@ -96,7 +128,7 @@
   「已引入 / 部分引入 / 未引入 + 原因」。其中 **§5 是实测纠正 PLAN.md 的地方** ——
   工具名前缀、`metadata["mcp"]["tool"]["annotations"]` 的真实路径，都是跑起来量的，
   不是照抄文档。
-- `docs/ARCHITECTURE.md`：分层、各模块职责与行数、两条主流程、八个关键决定**及其代价**、
+- `docs/ARCHITECTURE.md`：分层、各模块职责与行数、两条主流程、九个关键决定**及其代价**、
   数据落在哪儿、已知限制（分"有意为之"和"应该修"两栏）、测试策略与现状，
   外加 §7.1 **真机冒烟清单**（见下）。
 - `tests/test_docs.py`：把「文档里的相对链接不 404」从手写脚本收成测试 —— 文件在不在、
@@ -120,6 +152,23 @@
 这一轮之后测试是 **261 条**，全绿，进程内代码覆盖率 97%（总 80% —— 差距全在
 只能跑子进程的 `cli.py`，见 ARCHITECTURE §7）。
 
+**2026-10-17 又跑了一遍，这次带着真 MCP 服务。** 上一轮只验了内置工具，MCP 那条路
+一次都没真跑过。这次在仓库外起了一个 stdio MCP 服务（`echo` / `add` / `delete_thing` /
+`secret_thing` 四个工具），配了 `exclude = ["demo_delete_*", "demo_secret_*"]`，跑：
+
+- `maa mcp list` / `maa mcp test` —— 服务连上、工具表出得来、被筛掉的两个在表里标着；
+- `maa run "用 demo_echo 回显 hello，再用 demo_add 算 2+3"` —— **模型真调起了这两个
+  工具**，两个结果都对；
+- `maa chat` —— 跨轮上下文和同步 `SqliteSaver` 一起用没问题，退出给会话 id。
+
+**第一次跑是失败的**：模型调不动工具，`NotImplementedError: StructuredTool does not
+support sync invocation`。这条在仓库里躺了很久 —— 过滤写完、单测全绿、`doctor` 全绿，
+因为**从没有一条测试真的调过一次 MCP 工具**（测的都是"连上了没有""工具名对不对"）。
+顺带还挖出管道中文崩溃那条（`printf '中文' | maa chat`）。两件都是"跑起来才知道的"，
+所以 §7.1 的手工清单里加上了 MCP 那三条。
+
+这一轮之后测试是 **287 条**，全绿，进程内代码覆盖率 97%（总 81%）。
+
 ### 已知限制
 
 完整清单见 [ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-已知限制诚实清单)，这里是摘要：
@@ -129,16 +178,20 @@
 - **profile 启动期选定**，REPL 里不能切（会说不清"这条会话到底是谁在说话"）。
 - **提示词零测试** —— 装配测得到，"这句话到底有没有用"测不到，靠人用。
   §7.1 的手工冒烟能证明链路通，证明不了提示词好。
-- **MCP 工具表会撑爆系统提示** —— 服务一多的过滤（黑白名单）没做。
+- **多模态输入没入口** —— SDK 的 `read_file` 能读图，CLI 里没地方贴图。
 - **`remote` 模式只给提示不接通** —— 没账号、没计费、没镜像。
 - ~~`interrupt_on` 里写错工具名静默不生效~~ —— 已修，见上面「修复」第二条。
+- ~~MCP 工具表会撑爆系统提示，工具过滤没做~~ —— 已做，见上面 ⑪。
+- ~~MCP 工具到手调不动~~ —— 已修，见上面 ⑪。
 
 ### 未引入（明确不做，不是欠债）
 
 `docs/INDEX-COVERAGE.md` §6 把 24 项未引入按原因归成五类：要有服务端 13、
 要额外的模型调用 2、是独立子系统 4、会拆掉已有安全边界 4、面向图形界面 1。
-其中只有两条值得回头看：远程沙箱（`sandboxes.md`）和 MCP 工具过滤
-（`code/mcp-tools.md`）。
+其中原本有两条值得回头看，现在只剩一条：远程沙箱（`sandboxes.md`）。
+MCP 工具过滤（`code/mcp-tools.md`）已经做了 —— 而且回头看它值不值，答案是"值，
+但值的地方跟预想的不一样"：过滤本身半天就写完了，真花时间的是"筛掉的东西得能被看见"，
+以及写完单测之后**拿真模型跑一次才发现工具根本调不动**。
 
 ---
 
