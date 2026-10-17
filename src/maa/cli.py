@@ -14,11 +14,23 @@ from typing import Any
 
 import typer
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from . import __version__, approval, backends, checks, mcp, paths, profiles, session, skills, ui
+from . import (
+    __version__,
+    approval,
+    attachments,
+    backends,
+    checks,
+    mcp,
+    paths,
+    profiles,
+    session,
+    skills,
+    ui,
+)
 from .config import (
     ApprovalConfig,
     Config,
@@ -51,6 +63,9 @@ OPT_CONFIG = typer.Option(None, "--config", "-c", help="配置文件路径")
 OPT_AGENT = typer.Option(None, "--agent", "-a", help="能力 profile")
 OPT_MODEL = typer.Option(None, "--model", "-m", help="覆盖模型，如 anthropic:claude-sonnet-5")
 OPT_WORKSPACE = typer.Option(None, "--workspace", "-w", help="工作目录，默认取配置里的")
+OPT_IMAGE = typer.Option(
+    [], "--image", "-i", help="附一张图给模型看（PNG / JPEG / GIF / WebP），可给多次"
+)
 
 
 @dataclass
@@ -259,6 +274,7 @@ def _run_turn(
     prompt: str,
     thread_id: str,
     *,
+    images: Sequence[attachments.Attachment] = (),
     approver: approval.Approver | None = None,
 ) -> str:
     """跑一轮，边跑边把工具调用和回复打到终端。返回最后一段回复文本。
@@ -271,7 +287,7 @@ def _run_turn(
     """
     config = {"configurable": {"thread_id": thread_id}}
     who = approver if approver is not None else approval.Approver()
-    pending: Any = {"messages": [HumanMessage(prompt)]}
+    pending: Any = {"messages": [attachments.message(prompt, images)]}
 
     while True:
         final_text, requests = _drain(built.graph, pending, config)
@@ -335,15 +351,22 @@ def run(
     agent: str | None = OPT_AGENT,
     model: str | None = OPT_MODEL,
     workspace: str | None = OPT_WORKSPACE,
+    image: list[str] = OPT_IMAGE,
 ) -> None:
     """一次性执行：跑完就退出。"""
     options = _resolve(ctx, agent=agent, model=model, workspace=workspace)
+    # 先验图再装配：路径写错了不该先等一次模型和 MCP 的初始化（同 `--resume` 那条）。
+    images = _load_images(image)
     assembled = _assemble(options)
     _show_banner(assembled)
 
     try:
         final_text = _run_turn(
-            assembled.built, prompt, thread_id="run", approver=assembled.approver
+            assembled.built,
+            prompt,
+            thread_id="run",
+            images=images,
+            approver=assembled.approver,
         )
     except KeyboardInterrupt:
         ui.newline()
@@ -353,6 +376,15 @@ def run(
     ui.newline()
     if not final_text.strip():
         ui.warn("这一轮没有文本回复 —— 检查上面有没有报错")
+
+
+def _load_images(raw: Sequence[str]) -> list[attachments.Attachment]:
+    """把命令行给的图片路径读进来。读不动就当场抛 `ConfigError`，不往下走。"""
+    images = [attachments.load(path) for path in raw]
+    for item in images:
+        # 走 stderr：`maa run ... > 文件` 时这行是诊断，不该混进结果里。
+        ui.info(f"附上一张图：{item.describe()}")
+    return images
 
 
 @app.command()
@@ -389,6 +421,7 @@ def chat(
 def _repl(assembled: Session, store: session.Store, thread_id: str) -> None:
     """读一行、跑一轮、记一笔。会话切换（/new、/resume）就是换个 thread_id。"""
     read = _line_reader()
+    images: list[attachments.Attachment] = []
 
     while True:
         try:
@@ -406,6 +439,9 @@ def _repl(assembled: Session, store: session.Store, thread_id: str) -> None:
             return
         if text == "/help":
             _print_chat_help()
+            continue
+        if text == "/image" or text.startswith("/image "):
+            images = _handle_image(text, images)
             continue
         if text == "/new":
             thread_id = store.new_id()
@@ -433,7 +469,13 @@ def _repl(assembled: Session, store: session.Store, thread_id: str) -> None:
             continue
 
         try:
-            _run_turn(assembled.built, text, thread_id=thread_id, approver=assembled.approver)
+            _run_turn(
+                assembled.built,
+                text,
+                thread_id=thread_id,
+                images=images,
+                approver=assembled.approver,
+            )
         except KeyboardInterrupt:
             ui.newline()
             ui.warn("已中断，可以接着问")
@@ -447,7 +489,34 @@ def _repl(assembled: Session, store: session.Store, thread_id: str) -> None:
                 profile=assembled.built.profile.name,
                 workspace=paths.display(assembled.built.workspace),
             )
+        # 图只跟这一句走。成功、失败、中断都清 —— 留着的话下一句会莫名其妙
+        # 又带上那张图，而"为什么它又看了一遍"是个很难自己查明白的问题。
+        images = []
         ui.newline()
+
+
+def _handle_image(text: str, current: list[attachments.Attachment]) -> list[attachments.Attachment]:
+    """`/image <路径>` 附一张图，下一句带上；`/image` 单独敲看当前附了哪些。
+
+    读图放在**这里**（而不是等下一轮发出去时再读）：路径打错的话，错在敲下
+    回车那一刻就报出来，而不是等装配完 agent、连完 MCP 之后。
+    """
+    raw = text[len("/image") :].strip().strip("\"'")
+    if not raw:
+        if not current:
+            ui.hint("用法：/image <图片路径> —— 附给下一句看；敲 /image 看当前附了哪些")
+        else:
+            ui.hint(f"已经附了 {len(current)} 张，下一句会带上：")
+            for item in current:
+                ui.hint(f"  {item.describe()}")
+        return current
+    try:
+        item = attachments.load(raw)
+    except ConfigError as exc:
+        ui.error(str(exc))
+        return current
+    ui.hint(f"附上了 {item.describe()} —— 下一句会带上")
+    return [*current, item]
 
 
 def _line_reader() -> Callable[[str], str]:
@@ -497,6 +566,7 @@ def _print_chat_help() -> None:
             ("/help", "看这张表"),
             ("/threads", "列出历史会话"),
             ("/resume <id>", "切到某条历史会话（给 id 前缀就行）"),
+            ("/image <路径>", "附一张图给下一句看；可连敲几次，只跟下一句走"),
             ("/new", "开一条新会话，旧的留着"),
             ("/exit, /quit", "退出（Ctrl-D 同）"),
         ],

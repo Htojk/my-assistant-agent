@@ -9,9 +9,10 @@ C3 的验收条件是"真的在磁盘上写出文件"。假模型只能证明装
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
-from conftest import run_cli
+from conftest import run_cli, tiny_png
 from fake_openai import ARTICLE, FINAL_TEXT, Handler
 
 
@@ -60,3 +61,50 @@ def test_请求确实走了我们配的端点(project: Path, home_with_config: P
 
     assert Handler.requests_seen, "假服务一个请求都没收到"
     assert any(body.get("tools") for body in Handler.requests_seen)
+
+
+def _user_message(body: dict) -> dict:
+    """请求体里最后一条用户消息。前几轮的历史也在里面，要的是这一轮的。"""
+    return [m for m in body["messages"] if m["role"] == "user"][-1]
+
+
+def test_图片真的进了请求体(project: Path, home_with_config: Path, fake_openai: str) -> None:
+    """`--image` 这条路得一路走到 HTTP 请求体里。
+
+    断言的是"对面到底收到了什么"：形状对不对（内容块列表）、字节对不对（base64
+    解回来是同一串）—— 这两件事只有请求体说了算，中间任何一层都可以悄悄改掉它。
+    """
+    (project / "shot.png").write_bytes(tiny_png())
+
+    result = run_cli(
+        ["run", "这张图里有什么", "--image", "shot.png"],
+        home_with_config,
+        cwd=project,
+        OPENAI_BASE_URL=fake_openai,
+        OPENAI_API_KEY="sk-fake",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    content = _user_message(Handler.requests_seen[0])["content"]
+    assert content[0] == {"type": "text", "text": "这张图里有什么"}
+    url = content[1]["image_url"]["url"]
+    assert url == "data:image/png;base64," + base64.b64encode(tiny_png()).decode()
+    # 路径本身只该出现在给用户看的那行诊断里，不该混进请求体
+    assert "shot.png" not in result.stdout
+
+
+def test_不带图时请求体还是老样子(project: Path, home_with_config: Path, fake_openai: str) -> None:
+    """反过来说：没有图的时候，用户消息的 `content` 还是**字符串**。
+
+    这条钉的是"贴图没有把老路的形状改掉" —— 老路是历史、恢复、所有旧断言都在走的
+    那条。它一旦变成内容块列表，坏的方式会很安静（对面多半照收）。
+    """
+    run_cli(
+        ["run", "写一篇文章"],
+        home_with_config,
+        cwd=project,
+        OPENAI_BASE_URL=fake_openai,
+        OPENAI_API_KEY="sk-fake",
+    )
+
+    assert isinstance(_user_message(Handler.requests_seen[0])["content"], str)

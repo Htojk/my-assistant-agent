@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import run_cli
+from conftest import run_cli, tiny_png
 from fake_openai import Handler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -357,13 +357,92 @@ def test_chat_能读管道里的命令(tmp_path: Path) -> None:
     result = run_cli(
         ["chat"],
         tmp_path / "home",
-        stdin="/threads\n/nope\n/exit\n",
+        stdin="/help\n/threads\n/nope\n/exit\n",
         OPENAI_API_KEY="sk-fake",
     )
 
     assert result.returncode == 0, _both(result)
     assert "还没有聊过的会话" in _both(result)
     assert "没有这个命令：/nope" in _both(result)
+    assert "/image" in _both(result), "新命令得在 /help 那张表里"
+
+
+def _images_in(body: dict) -> int:
+    """请求体里有几张图。数的是 `data:` 开头的 URI —— 一个图片块正好一个。
+
+    不数 `"image_url"`：一个块里它出现**两次**（`"type": "image_url"` 和
+    `"image_url": {...}` 这个键），数出来是图的两倍（第一次写就栽在这儿了）。
+    `data:` 那个 URI 一个块只有一个，没有歧义。
+    """
+    return json.dumps(body, ensure_ascii=False).count("data:image/")
+
+
+def test_repl_里附的图跟着下一句走(project: Path, home_with_config: Path, fake_openai: str) -> None:
+    """`/image` 附上的图，下一句发出去时得带上 —— 而且**只有那一句**。
+
+    最后那句断言（第二轮的请求里只有一个图片块）看着奇怪，其实是重点：图进了
+    checkpoint，历史每轮都会重发，所以第二轮的请求体里**一定**有第一轮那张图。
+    真正要钉的是"没有多出第二张" —— 附一次、用一次，不是附一次、往后每句都带。
+    """
+    (project / "shot.png").write_bytes(tiny_png())
+    env = {"OPENAI_BASE_URL": fake_openai, "OPENAI_API_KEY": "sk-fake"}
+
+    result = run_cli(
+        ["chat"],
+        home_with_config,
+        cwd=project,
+        stdin="/image shot.png\n这张图里有什么\n第二句没有图\n/exit\n",
+        **env,
+    )
+
+    assert result.returncode == 0, _both(result)
+    assert "附上了" in _both(result)
+    assert _images_in(Handler.requests_seen[0]) == 1, "第一句该带着那张图"
+    assert _images_in(Handler.requests_seen[-1]) == 1, "第二句不该多出一张来"
+
+
+def test_repl_里_image_自己敲是查看(
+    project: Path, home_with_config: Path, fake_openai: str
+) -> None:
+    """`/image` 单独敲是"我附了哪些" —— 附了什么得能自己看明白。
+
+    不带这条的话，人只能靠"刚才那行字滚上去了"来记，而终端里那句话几秒就没了。
+    """
+    (project / "shot.png").write_bytes(tiny_png())
+    env = {"OPENAI_BASE_URL": fake_openai, "OPENAI_API_KEY": "sk-fake"}
+
+    result = run_cli(
+        ["chat"],
+        home_with_config,
+        cwd=project,
+        stdin="/image\n/image shot.png\n/image\n/exit\n",
+        **env,
+    )
+
+    assert result.returncode == 0, _both(result)
+    assert "用法：/image" in result.stdout, "还没附的时候该给用法"
+    assert "已经附了 1 张" in result.stdout
+    assert "shot.png" in result.stdout
+
+
+def test_repl_里图片路径写错不炸(project: Path, home_with_config: Path, fake_openai: str) -> None:
+    """一条坏输入不该把 REPL 打断 —— 报一句、接着聊。
+
+    顺带钉住"报错不等于附上了"：路径没读成的话，下一句不该带一个空图上去。
+    """
+    env = {"OPENAI_BASE_URL": fake_openai, "OPENAI_API_KEY": "sk-fake"}
+
+    result = run_cli(
+        ["chat"],
+        home_with_config,
+        cwd=project,
+        stdin="/image 没有这张图.png\n还是接着问\n/exit\n",
+        **env,
+    )
+
+    assert result.returncode == 0, _both(result)
+    assert "找不到这个文件" in _both(result)
+    assert _images_in(Handler.requests_seen[0]) == 0
 
 
 def test_管道里的中文按_utf8_读(project: Path, home_with_config: Path, fake_openai: str) -> None:

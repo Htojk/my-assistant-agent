@@ -220,6 +220,19 @@ def test_doctor_配了过滤就多提一句(maa_home: Path) -> None:
     assert "过滤掉了" in result.stdout
 
 
+def test_图片路径写错了当场报错(tmp_path: Path) -> None:
+    """图读不动就不该往下走 —— 而且得在**装配之前**停下来。
+
+    所以这条连密钥都不给：真去装配的话，没密钥会报"模型起不来"，这条断言的就是
+    它根本没走到那一步（同 `test_session.py` 里 `--resume` 写错那条）。
+    """
+    result = run_cli(["run", "看看这张图", "--image", "没有这张图.png"], tmp_path / "home")
+
+    assert result.returncode == 1
+    assert "没有这张图.png" in result.stdout + result.stderr
+    assert "模型起不来" not in result.stdout + result.stderr
+
+
 # --------------------------------------------------------------------------- 进程内：两句话
 
 

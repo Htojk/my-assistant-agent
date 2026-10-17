@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import os
+import struct
 import subprocess
 import sys
 import threading
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -111,6 +113,33 @@ def write_config(home: Path, *, approval: str = "manual") -> Path:
         encoding="utf-8",
     )
     return home
+
+
+def tiny_png(width: int = 1, height: int = 1) -> bytes:
+    """造一张**真的** PNG（默认 1×1）。不用 PIL：手写三个块一共十来行。
+
+    为什么要真图而不是"几个字节的假文件头"：被测的正是"这文件到底是不是图"，
+    拿假头去测它等于自己骗自己 —— 哪天嗅探换成真解析，用假头的测试会一直绿。
+    """
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    # IHDR：8 位色深、色彩类型 2（真彩色 RGB）、无压缩无隔行
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    # 每行前面那个 \x00 是"这行不过滤"，少了它连 zlib 都解不出来
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
 
 
 @pytest.fixture
