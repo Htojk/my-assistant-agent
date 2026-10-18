@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fake_openai import Handler, serve
+from fake_openai import FINAL_TEXT, Handler, serve
 
 from maa import paths
 
@@ -79,6 +79,9 @@ def run_cli(
 def fake_openai() -> Iterator[str]:
     """一个假的 OpenAI 兼容服务，返回它的 base_url。"""
     Handler.requests_seen = []
+    # 回话形状的旋钮也归位 —— 上一条用例改过它的话，下一条不该跟着变
+    Handler.prose = ""
+    Handler.final_text = FINAL_TEXT
     server, base_url = serve()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

@@ -302,7 +302,9 @@ def _run_turn(
 def _drain(graph: Any, inputs: Any, config: dict[str, Any]) -> tuple[str, list[Mapping[str, Any]]]:
     """跑一段（新输入或者"接着上次"），把过程打到终端。
 
-    返回（最后一段回复, 待审批的请求）。待审批的可能是空表 —— 那就跑完了。
+    返回（模型这一轮说过的最后一段文字, 待审批的请求）。空串的意思是"整轮一个字
+    都没说"—— 调用方靠它判断要不要提示"可能出错了"；模型把话和工具调用放在同一条
+    消息里时它也得算数（理由见下面那行注释）。待审批的可能是空表 —— 那就跑完了。
 
     同时订阅 updates（拿结构：谁调了什么工具）和 messages（拿 token 流），
     前者负责"看得见在干什么"，后者负责"不用干等"。
@@ -321,11 +323,15 @@ def _drain(graph: Any, inputs: Any, config: dict[str, Any]) -> tuple[str, list[M
                 if not isinstance(update, dict):
                     continue
                 for message in update.get("messages", []) or []:
-                    if isinstance(message, AIMessage) and message.tool_calls:
-                        for call in message.tool_calls:
-                            ui.tool_call(call.get("name", "?"), call.get("args"))
-                    elif isinstance(message, AIMessage) and not message.tool_calls:
-                        final_text = _chunk_text(message) or final_text
+                    if not isinstance(message, AIMessage):
+                        continue
+                    for call in message.tool_calls:
+                        ui.tool_call(call.get("name", "?"), call.get("args"))
+                    # **带工具调用**的消息也要收它的文字。模型常常"边说边调"
+                    # （把旁白和 write_file 放进同一条消息），收尾那条消息则是空的
+                    # —— 只看没有工具调用的消息，`run` 就会对着一段刚印出来的长文
+                    # 报"这一轮没有文本回复"。空串靠 `or` 保住上一句。
+                    final_text = _chunk_text(message) or final_text
     return final_text, requests
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import pytest
 from conftest import run_cli, tiny_png
 from fake_openai import ARTICLE, FINAL_TEXT, Handler
 
@@ -108,3 +109,33 @@ def test_不带图时请求体还是老样子(project: Path, home_with_config: P
     )
 
     assert isinstance(_user_message(Handler.requests_seen[0])["content"], str)
+
+
+def test_边说边调也算回复了(
+    project: Path, home_with_config: Path, fake_openai: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旁白和工具调用在同一条消息里、收尾那条是空的 —— 这不算"没有文本回复"。
+
+    这是**真跑出来的**形状：`writer` profile 写文章时，那两千多字和 `write_file`
+    在同一条 AI 消息里发下来，收尾的消息一个字都没有。原来只看"没有工具调用的
+    那条消息"，于是 `maa run` 会在一篇长文刚印完之后说"这一轮没有文本回复" ——
+    文案本身是错的。**在成功的运行上报错比不报更坏**：它会训练人忽略这行警告，
+    跟"静默筛掉一批工具"是同一类错的镜像。
+    """
+    monkeypatch.setattr(Handler, "prose", "我这就写到 out/article.md 里。")
+    monkeypatch.setattr(Handler, "final_text", "")
+
+    result = run_cli(
+        ["run", "写一篇文章"],
+        home_with_config,
+        cwd=project,
+        OPENAI_BASE_URL=fake_openai,
+        OPENAI_API_KEY="sk-fake",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "我这就写到" in result.stdout
+    # 警告走 stderr（`ui.warn` → `err_console`）—— 盯着 stdout 找它的话，
+    # 这条断言永远绿，测的是空气。
+    assert "没有文本回复" not in result.stderr
+    assert (project / "out" / "article.md").exists()

@@ -27,8 +27,11 @@ def _chunk(delta: dict, finish: str | None = None) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def sse_tool_call() -> str:
+def sse_tool_call(prose: str = "") -> str:
+    """调工具的那一轮。`prose` 是"边说边调"里那句话 —— 真模型常常这么发。"""
     parts = [_chunk({"role": "assistant", "content": ""})]
+    for i in range(0, len(prose), 8):
+        parts.append(_chunk({"content": prose[i : i + 8]}))
     parts.append(
         _chunk(
             {
@@ -65,10 +68,18 @@ class Handler(BaseHTTPRequestHandler):
 
     收到的请求体全攒在 `requests_seen` 里 —— 想断言"对面到底看见了什么"
     （比如恢复出来的历史有没有真的发过去）就看它。
+
+    `prose` / `final_text` 两个旋钮用来复现别的回话形状（默认就是上面那句）：
+    真模型经常**边说边调**（旁白和 `write_file` 在同一条消息里），收尾那条消息
+    则是空的 —— 那是"这一轮到底有没有文本回复"判断里最容易看错的一种形状。
     """
 
     protocol_version = "HTTP/1.1"
     requests_seen: list[dict] = []
+    # 调工具那一轮里，模型顺带说的那句话
+    prose: str = ""
+    # 收尾那一轮说的话；空串 = 这一轮一个字都没说
+    final_text: str = FINAL_TEXT
 
     def log_message(self, *args: object) -> None:
         pass
@@ -85,15 +96,14 @@ class Handler(BaseHTTPRequestHandler):
         turns = sum(1 for m in body.get("messages", []) if m.get("role") == "assistant")
 
         if body.get("stream"):
-            self._send(
-                200, "text/event-stream", sse_tool_call() if turns == 0 else sse_text(FINAL_TEXT)
-            )
+            script = sse_tool_call(self.prose) if turns == 0 else sse_text(self.final_text)
+            self._send(200, "text/event-stream", script)
             return
 
         if turns == 0:
             message = {
                 "role": "assistant",
-                "content": "",
+                "content": self.prose,
                 "tool_calls": [
                     {
                         "id": "call_fake_1",
@@ -104,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
             }
             finish = "tool_calls"
         else:
-            message, finish = {"role": "assistant", "content": FINAL_TEXT}, "stop"
+            message, finish = {"role": "assistant", "content": self.final_text}, "stop"
 
         self._send(
             200,
